@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agent UI Mock</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <!-- 整体布局：左侧边栏 + 右侧主区域 -->
+    <div class="layout">
+      <!-- 左侧导航栏（视觉风格参考截图） -->
+      <aside class="sidebar">
+        <div class="brand-row">
+          <div class="logo-dot">◉</div>
+          <button class="collapse-btn" aria-label="折叠">☰</button>
+        </div>
+
+        <button class="nav-btn primary">新聊天</button>
+
+        <nav class="nav-list">
+          <button class="nav-btn">搜索聊天</button>
+          <button class="nav-btn">库</button>
+          <button class="nav-btn">应用</button>
+          <button class="nav-btn">深度研究</button>
+          <button class="nav-btn">Codex</button>
+          <button class="nav-btn">GPT</button>
+          <button class="nav-btn">项目</button>
+        </nav>
+
+        <section class="history-block">
+          <h3>聊天</h3>
+          <button class="history-item">公式9a中的限制条件来源</button>
+          <button class="history-item">CS2 agent 模型推荐</button>
+          <button class="history-item">预处理范围问题</button>
+          <button class="history-item active">GPT版本询问</button>
+        </section>
+
+        <div class="user-card">
+          <div class="avatar">A</div>
+          <div>
+            <strong>alex</strong>
+            <p>Monkey_032</p>
+          </div>
+        </div>
+
+        <button class="invite-btn">邀请团队成员</button>
+      </aside>
+
+      <!-- 右侧主内容区 -->
+      <main class="main">
+        <!-- 顶部操作栏 -->
+        <header class="main-topbar">
+          <button class="model-switch">ChatGPT 5.2 ▾</button>
+          <div class="top-actions">
+            <button class="icon-btn">⤴︎ 分享</button>
+            <button class="icon-btn">⋯</button>
+          </div>
+        </header>
+
+        <!-- 聊天内容区 -->
+        <section id="messageList" class="conversation" aria-live="polite">
+          <article class="msg user">
+            <div class="bubble">你好，你是什么版本的gpt</div>
+          </article>
+
+          <article class="msg assistant">
+            <div class="content">
+              <p>你好～我是 GPT-5.3。</p>
+              <p>这是一个 UI 样式演示版：先对齐界面视觉，功能后续再接入。</p>
+            </div>
+          </article>
+        </section>
+
+        <!-- 底部输入栏（悬浮样式） -->
+        <footer class="composer-wrap">
+          <form id="composerForm" class="composer">
+            <button class="circle-btn" type="button" aria-label="更多">＋</button>
+            <textarea id="composerInput" rows="1" placeholder="有问题，尽管问"></textarea>
+            <button class="icon-plain" type="button" aria-label="语音">🎤</button>
+            <button id="sendBtn" class="circle-send" type="submit" aria-label="发送">➤</button>
+          </form>
+          <p class="disclaimer">ChatGPT 也可能会犯错。请核对关键信息。</p>
+        </footer>
+      </main>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
