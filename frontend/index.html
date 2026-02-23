@@ -12,46 +12,27 @@
       <!-- 左侧导航栏（视觉风格参考截图） -->
       <aside class="sidebar">
         <div class="brand-row">
-          <div class="logo-dot">◉</div>
+          <div class="logo-dot">◉NUS 5260◉</div>
           <button class="collapse-btn" aria-label="折叠">☰</button>
         </div>
 
-        <button class="nav-btn primary">新聊天</button>
+        <button id="newChatBtn" class="nav-btn primary">新聊天</button>
 
         <nav class="nav-list">
           <button class="nav-btn">搜索聊天</button>
-          <button class="nav-btn">库</button>
-          <button class="nav-btn">应用</button>
-          <button class="nav-btn">深度研究</button>
-          <button class="nav-btn">Codex</button>
-          <button class="nav-btn">GPT</button>
-          <button class="nav-btn">项目</button>
         </nav>
 
         <section class="history-block">
           <h3>聊天</h3>
-          <button class="history-item">公式9a中的限制条件来源</button>
-          <button class="history-item">CS2 agent 模型推荐</button>
-          <button class="history-item">预处理范围问题</button>
-          <button class="history-item active">GPT版本询问</button>
+          <div id="historyList"></div>
         </section>
-
-        <div class="user-card">
-          <div class="avatar">A</div>
-          <div>
-            <strong>alex</strong>
-            <p>Monkey_032</p>
-          </div>
-        </div>
-
-        <button class="invite-btn">邀请团队成员</button>
       </aside>
 
       <!-- 右侧主内容区 -->
       <main class="main">
         <!-- 顶部操作栏 -->
         <header class="main-topbar">
-          <button class="model-switch">ChatGPT 5.2 ▾</button>
+          <button class="model-switch">普通模型▾</button>
           <div class="top-actions">
             <button class="icon-btn">⤴︎ 分享</button>
             <button class="icon-btn">⋯</button>
@@ -60,14 +41,9 @@
 
         <!-- 聊天内容区 -->
         <section id="messageList" class="conversation" aria-live="polite">
-          <article class="msg user">
-            <div class="bubble">你好，你是什么版本的gpt</div>
-          </article>
-
           <article class="msg assistant">
-            <div class="content">
-              <p>你好～我是 GPT-5.3。</p>
-              <p>这是一个 UI 样式演示版：先对齐界面视觉，功能后续再接入。</p>
+            <div class="bubble">
+               你好～可以开始新对话了
             </div>
           </article>
         </section>
