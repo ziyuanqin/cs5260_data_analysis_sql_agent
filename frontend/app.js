@@ -152,6 +152,14 @@ function submitMessage(text) {
 // Enter 发送，Shift+Enter 换行
 composerInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
+    // 输入法候选确认阶段（中文/日文等）按 Enter：不提交
+    // isComposing: 现代浏览器标准标志
+    // keyCode 229: 输入法组合输入常见特殊码（兼容兜底）
+    if (e.isComposing || e.keyCode === 229) {
+      e.preventDefault();
+      return;
+    }
+
     e.preventDefault();
     composerForm.requestSubmit();
   }
