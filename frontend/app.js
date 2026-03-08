@@ -31,6 +31,82 @@ function normalizeMessages(rawMessages) {
     .filter((msg) => msg.text.trim().length > 0);
 }
 
+function escapeHtml(text) {
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function parseMarkdownTable(line) {
+  const stripped = line.trim();
+  if (!stripped.startsWith("|")) return null;
+  const cells = stripped
+    .split("|")
+    .map((cell) => cell.trim())
+    .filter((cell, idx, arr) => !(idx === 0 && cell === "") && !(idx === arr.length - 1 && cell === ""));
+  return cells.length ? cells : null;
+}
+
+function isTableSeparatorLine(line) {
+  const stripped = line.trim();
+  if (!stripped.startsWith("|")) return false;
+  return /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(stripped);
+}
+
+function renderAssistantMessageHtml(text) {
+  const lines = text.split(/\r?\n/);
+  const parts = [];
+  let idx = 0;
+
+  while (idx < lines.length) {
+    const headerCells = parseMarkdownTable(lines[idx]);
+    const separatorLine = lines[idx + 1] || "";
+
+    if (headerCells && isTableSeparatorLine(separatorLine)) {
+      const rows = [];
+      idx += 2;
+
+      while (idx < lines.length) {
+        const rowCells = parseMarkdownTable(lines[idx]);
+        if (!rowCells) break;
+        rows.push(rowCells);
+        idx += 1;
+      }
+
+      const maxCols = Math.max(headerCells.length, ...rows.map((row) => row.length));
+      const normalizedHeader = [...headerCells, ...Array(Math.max(0, maxCols - headerCells.length)).fill("")];
+      const normalizedRows = rows.map((row) => [...row, ...Array(Math.max(0, maxCols - row.length)).fill("")]);
+
+      const headHtml = normalizedHeader.map((cell) => `<th>${escapeHtml(cell)}</th>`).join("");
+      const bodyHtml = normalizedRows
+        .map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`)
+        .join("");
+
+      parts.push(`<div class="table-wrap"><table><thead><tr>${headHtml}</tr></thead><tbody>${bodyHtml}</tbody></table></div>`);
+      continue;
+    }
+
+    const textBuffer = [];
+    while (idx < lines.length) {
+      const maybeHeader = parseMarkdownTable(lines[idx]);
+      const maybeSeparator = lines[idx + 1] || "";
+      if (maybeHeader && isTableSeparatorLine(maybeSeparator)) break;
+      textBuffer.push(lines[idx]);
+      idx += 1;
+    }
+
+    const paragraph = textBuffer.join("\n").trim();
+    if (paragraph) {
+      parts.push(`<p>${escapeHtml(paragraph).replaceAll("\n", "<br>")}</p>`);
+    }
+  }
+
+  return parts.join("") || `<p>${escapeHtml(text)}</p>`;
+}
+
 // 自动根据内容调整输入框高度
 function autoResizeTextarea() {
   composerInput.style.height = "38px";
@@ -46,6 +122,20 @@ function shortTitle(text, max = 18) {
 // 当前激活会话
 function getActiveConversation() {
   return state.conversations.find((c) => c.id === state.activeConversationId) || null;
+}
+
+async function resetConversationOnServer(conversationId) {
+  if (!conversationId) return;
+
+  try {
+    await fetch("/api/chat/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: conversationId }),
+    });
+  } catch {
+    // 忽略重置失败，不影响本地删除
+  }
 }
 
 // 保存到本地：刷新页面后仍可恢复
@@ -137,6 +227,8 @@ function deleteConversation(conversationId) {
   const idx = state.conversations.findIndex((c) => c.id === conversationId);
   if (idx === -1) return;
 
+  resetConversationOnServer(conversationId);
+
   state.conversations.splice(idx, 1);
 
   // 若删除的是当前会话，切到剩余第一条
@@ -201,7 +293,12 @@ function renderMessages() {
 
     const bubble = document.createElement("div");
     bubble.className = "bubble";
-    bubble.textContent = msg.text;
+    if (msg.role === "assistant") {
+      bubble.classList.add("rich");
+      bubble.innerHTML = renderAssistantMessageHtml(msg.text);
+    } else {
+      bubble.textContent = msg.text;
+    }
 
     article.appendChild(bubble);
     messageList.appendChild(article);
@@ -261,6 +358,20 @@ async function streamAssistantReply(conversationId, assistantMessage, userText) 
         const delta = payload?.payload?.delta;
         if (typeof delta === "string" && delta.length > 0) {
           assistantMessage.text += delta;
+          const active = getActiveConversation();
+          if (active && active.id === conversationId) {
+            renderMessages();
+          }
+        }
+        continue;
+      }
+
+      if (payload?.event === "final") {
+        const finalText = payload?.payload?.text;
+        if (typeof finalText === "string" && finalText.trim()) {
+          if (!assistantMessage.text.trim()) {
+            assistantMessage.text = finalText;
+          }
           const active = getActiveConversation();
           if (active && active.id === conversationId) {
             renderMessages();

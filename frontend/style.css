@@ -209,7 +209,7 @@ textarea {
   height: 60px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   padding: 0 22px;
 }
 
@@ -232,11 +232,6 @@ textarea {
 .icon-btn:hover,
 .model-switch:hover {
   background: #eef0f3;
-}
-
-.top-actions {
-  display: flex;
-  gap: 8px;
 }
 
 /* 对话区 */
@@ -283,6 +278,53 @@ textarea {
   border-bottom-right-radius: 10px;
 }
 
+.bubble.rich {
+  white-space: normal;
+}
+
+.bubble.rich p {
+  margin: 0;
+}
+
+.bubble.rich p + p,
+.bubble.rich p + .table-wrap,
+.bubble.rich .table-wrap + p,
+.bubble.rich .table-wrap + .table-wrap {
+  margin-top: 12px;
+}
+
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.table-wrap table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 320px;
+  font-size: 14px;
+}
+
+.table-wrap th,
+.table-wrap td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #edf0f4;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.table-wrap th {
+  background: #f8fafc;
+  color: #1f2937;
+  font-weight: 600;
+}
+
+.table-wrap tr:last-child td {
+  border-bottom: 0;
+}
+
 /* 底部输入区域 */
 .composer-wrap {
   position: sticky;
@@ -301,7 +343,7 @@ textarea {
   min-height: 60px;
   padding: 10px 12px;
   display: grid;
-  grid-template-columns: 36px 1fr 36px 36px;
+  grid-template-columns: 36px 1fr 36px;
   align-items: center;
   gap: 6px;
   box-shadow: 0 6px 22px rgba(17, 24, 39, 0.06);
@@ -319,8 +361,7 @@ textarea {
 }
 
 .circle-btn,
-.circle-send,
-.icon-plain {
+.circle-send {
   border: 0;
   background: transparent;
   cursor: pointer;
@@ -331,21 +372,13 @@ textarea {
   place-items: center;
 }
 
-.circle-btn:hover,
-.icon-plain:hover {
+.circle-btn:hover {
   background: #f1f3f5;
 }
 
 .circle-send {
   background: var(--brand);
   color: #fff;
-}
-
-.disclaimer {
-  text-align: center;
-  color: #6b7280;
-  font-size: 12px;
-  margin: 10px 0 0;
 }
 
 @media (max-width: 920px) {
