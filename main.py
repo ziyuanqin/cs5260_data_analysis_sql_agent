@@ -1,11 +1,13 @@
-import asyncio
 import json
+import os
+import re
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from openai import OpenAI
 from pydantic import BaseModel
 
 
@@ -18,6 +20,34 @@ class ChatRequest(BaseModel):
 
 
 app = FastAPI(title="Role C Frontend Demo API")
+
+
+def load_api_key() -> str | None:
+	key_from_env = os.getenv("YUNWU_API_KEY")
+	if key_from_env:
+		return key_from_env
+
+	test_api_path = Path(__file__).parent / "utils" / "test_api.py"
+	if not test_api_path.exists():
+		return None
+
+	try:
+		content = test_api_path.read_text(encoding="utf-8")
+	except OSError:
+		return None
+
+	match = re.search(r"^key\s*=\s*['\"]([^'\"]+)['\"]", content, re.MULTILINE)
+	return match.group(1) if match else None
+
+
+API_BASE_URL = os.getenv("YUNWU_BASE_URL", "https://yunwu.ai/v1")
+API_KEY = load_api_key()
+MODEL_NAME = os.getenv("YUNWU_MODEL", "gpt-4o")
+
+if API_KEY:
+	client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+else:
+	client = None
 
 app.add_middleware(
 	CORSMiddleware,
@@ -37,84 +67,71 @@ def sse_data(payload: dict) -> str:
 async def chat_stream(req: ChatRequest):
 	# 以生成器方式持续返回事件，实现“流式输出”
 	async def event_generator():
-		# 根据模式返回不同说明文案（仅示例）
-		text = (
-			f"收到你的消息：{req.message}。"
-			if req.mode == "general"
-			else f"分析师模式已启动，正在分析：{req.message}。"
-		)
-
-		# 逐字发送 token 事件，模拟大模型流式输出
-		for token in text:
-			await asyncio.sleep(0.02)
+		if client is None:
 			yield sse_data(
 				{
-					"event": "token",
+					"event": "error",
 					"content_type": "text",
-					"payload": {"delta": token},
+					"payload": {"message": "后端未配置 YUNWU_API_KEY，无法调用模型接口。"},
 				}
 			)
+			return
 
-		# 分析师模式下额外返回“工具结果”：表格、图表、文件
-		if req.mode == "analyst":
-			await asyncio.sleep(0.15)
+		messages = [{"role": "user", "content": req.message}]
+		full_text = ""
+
+		try:
+			stream = client.chat.completions.create(
+				model=MODEL_NAME,
+				messages=messages,
+				stream=True,
+				timeout=100,
+			)
+
+			for chunk in stream:
+				if not hasattr(chunk, "choices") or not chunk.choices:
+					continue
+
+				choice = chunk.choices[0]
+				delta = getattr(choice, "delta", None)
+				if delta is None:
+					continue
+
+				content = getattr(delta, "content", None)
+				if not content:
+					continue
+
+				full_text += content
+				yield sse_data(
+					{
+						"event": "token",
+						"content_type": "text",
+						"payload": {"delta": content},
+					}
+				)
+
 			yield sse_data(
 				{
-					"event": "tool_result",
-					"content_type": "table",
-					"payload": {
-						"columns": ["metric", "value"],
-						"rows": [
-							{"metric": "样本数", "value": 1200},
-							{"metric": "均值", "value": 37.42},
-							{"metric": "标准差", "value": 4.9},
-						],
-					},
+					"event": "final",
+					"content_type": "text",
+					"payload": {"text": full_text or "处理完成。"},
 				}
 			)
-
-			# 1x1 透明像素 PNG（演示占位图）
-			tiny_png_base64 = (
-				"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMBAAFT"
-				"B5cAAAAASUVORK5CYII="
-			)
-			await asyncio.sleep(0.1)
+		except Exception as exc:
 			yield sse_data(
 				{
-					"event": "tool_result",
-					"content_type": "chart",
-					"payload": {
-						"image_base64": tiny_png_base64,
-						"alt": "demo chart",
-					},
+					"event": "error",
+					"content_type": "text",
+					"payload": {"message": f"模型调用失败：{str(exc)}"},
 				}
 			)
-
-			await asyncio.sleep(0.05)
-			yield sse_data(
-				{
-					"event": "tool_result",
-					"content_type": "file",
-					"payload": {
-						"name": "summary.csv",
-						"url": "https://example.com/summary.csv",
-						"size": "12KB",
-					},
-				}
-			)
-
-		# 最终完成事件
-		await asyncio.sleep(0.05)
-		yield sse_data(
-			{
-				"event": "final",
-				"content_type": "text",
-				"payload": {"text": "处理完成。"},
-			}
-		)
 
 	# `text/event-stream` 是 SSE 标准媒体类型
-	return StreamingResponse(event_generator(), media_type="text/event-stream")
+	return StreamingResponse(
+		event_generator(),
+		media_type="text/event-stream",
+		headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+	)
 
 
 # 将前端静态资源挂载到根路径，直接访问 / 即可打开页面

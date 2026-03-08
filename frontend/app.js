@@ -11,7 +11,25 @@ const state = {
   conversations: [],
   activeConversationId: null,
   chatCounter: 1,
+  isStreaming: false,
 };
+
+function createId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `chat-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function normalizeMessages(rawMessages) {
+  if (!Array.isArray(rawMessages)) return [];
+  return rawMessages
+    .map((msg) => ({
+      role: msg?.role === "user" ? "user" : "assistant",
+      text: typeof msg?.text === "string" ? msg.text : "",
+    }))
+    .filter((msg) => msg.text.trim().length > 0);
+}
 
 // 自动根据内容调整输入框高度
 function autoResizeTextarea() {
@@ -51,9 +69,36 @@ function restoreState() {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed.conversations) || !parsed.conversations.length) return false;
 
-    state.conversations = parsed.conversations;
-    state.activeConversationId = parsed.activeConversationId || parsed.conversations[0].id;
-    state.chatCounter = Number(parsed.chatCounter || parsed.conversations.length + 1);
+    const normalizedConversations = parsed.conversations
+      .map((convo, index) => {
+        const messages = normalizeMessages(convo?.messages);
+        return {
+          id: typeof convo?.id === "string" && convo.id ? convo.id : createId(),
+          title:
+            typeof convo?.title === "string" && convo.title.trim()
+              ? convo.title
+              : `新聊天 ${index + 1}`,
+          createdAt: Number(convo?.createdAt || Date.now()),
+          updatedAt: Number(convo?.updatedAt || Date.now()),
+          messages: messages.length
+            ? messages
+            : [{ role: "assistant", text: "你好~可以开始新对话了" }],
+        };
+      })
+      .filter((convo) => convo.id);
+
+    if (!normalizedConversations.length) return false;
+
+    state.conversations = normalizedConversations;
+    state.activeConversationId =
+      normalizedConversations.find((c) => c.id === parsed.activeConversationId)?.id ||
+      normalizedConversations[0].id;
+    state.chatCounter = Number(parsed.chatCounter || normalizedConversations.length + 1);
+
+    if (!Number.isFinite(state.chatCounter) || state.chatCounter < 1) {
+      state.chatCounter = normalizedConversations.length + 1;
+    }
+
     return true;
   } catch {
     return false;
@@ -62,7 +107,7 @@ function restoreState() {
 
 // 创建新会话
 function createConversation() {
-  const id = crypto.randomUUID();
+  const id = createId();
   const convo = {
     id,
     title: `新聊天 ${state.chatCounter}`,
@@ -146,6 +191,10 @@ function renderMessages() {
   const convo = getActiveConversation();
   if (!convo) return;
 
+  if (!Array.isArray(convo.messages)) {
+    convo.messages = [{ role: "assistant", text: "你好~可以开始新对话了" }];
+  }
+
   for (const msg of convo.messages) {
     const article = document.createElement("article");
     article.className = `msg ${msg.role}`;
@@ -167,13 +216,78 @@ function renderAll() {
   renderMessages();
 }
 
-// 发送消息：写入当前会话并模拟助手回复
-function submitMessage(text) {
+async function streamAssistantReply(conversationId, assistantMessage, userText) {
+  const resp = await fetch("/api/chat/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      session_id: conversationId,
+      mode: "general",
+      message: userText,
+      stream: true,
+    }),
+  });
+
+  if (!resp.ok || !resp.body) {
+    throw new Error(`请求失败：HTTP ${resp.status}`);
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() || "";
+
+    for (const frame of frames) {
+      const line = frame
+        .split("\n")
+        .find((item) => item.startsWith("data: "));
+      if (!line) continue;
+
+      let payload;
+      try {
+        payload = JSON.parse(line.slice(6));
+      } catch {
+        continue;
+      }
+
+      if (payload?.event === "token") {
+        const delta = payload?.payload?.delta;
+        if (typeof delta === "string" && delta.length > 0) {
+          assistantMessage.text += delta;
+          const active = getActiveConversation();
+          if (active && active.id === conversationId) {
+            renderMessages();
+          }
+        }
+        continue;
+      }
+
+      if (payload?.event === "error") {
+        throw new Error(payload?.payload?.message || "流式返回错误");
+      }
+    }
+  }
+}
+
+// 发送消息：写入当前会话并通过后端流式获取回复
+async function submitMessage(text) {
   const convo = getActiveConversation();
-  if (!convo) return;
+  if (!convo || state.isStreaming) return;
+
+  if (!Array.isArray(convo.messages)) {
+    convo.messages = [];
+  }
 
   convo.messages.push({ role: "user", text });
-  convo.messages.push({ role: "assistant", text: "已收到。当前为 UI 样式版，后续会接入真实模型与流式能力。" });
+  const assistantMessage = { role: "assistant", text: "" };
+  convo.messages.push(assistantMessage);
   convo.updatedAt = Date.now();
 
   // 如果还是默认标题，用第一条用户消息更新标题
@@ -184,8 +298,27 @@ function submitMessage(text) {
   // 最近更新的会话放到顶部
   state.conversations.sort((a, b) => b.updatedAt - a.updatedAt);
 
+  state.isStreaming = true;
+  composerInput.disabled = true;
   persistState();
   renderAll();
+
+  try {
+    await streamAssistantReply(convo.id, assistantMessage, text);
+    if (!assistantMessage.text.trim()) {
+      assistantMessage.text = "模型未返回文本内容。";
+    }
+  } catch (err) {
+    assistantMessage.text = `请求失败：${err?.message || "未知错误"}`;
+  } finally {
+    convo.updatedAt = Date.now();
+    state.conversations.sort((a, b) => b.updatedAt - a.updatedAt);
+    state.isStreaming = false;
+    composerInput.disabled = false;
+    persistState();
+    renderAll();
+    composerInput.focus();
+  }
 }
 
 // Enter 发送，Shift+Enter 换行
