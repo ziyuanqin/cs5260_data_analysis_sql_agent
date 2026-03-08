@@ -127,6 +127,35 @@ textarea {
   font-size: 15px;
 }
 
+.history-item-wrap {
+  display: grid;
+  grid-template-columns: 1fr 28px;
+  align-items: center;
+  gap: 4px;
+}
+
+.history-delete {
+  border: 0;
+  background: transparent;
+  color: #6b7280;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.history-item-wrap:hover .history-delete,
+.history-item.active + .history-delete {
+  opacity: 1;
+}
+
+.history-delete:hover {
+  background: #d7dbe2;
+  color: #111827;
+}
+
 .history-item:hover,
 .history-item.active {
   background: #e1e3e8;

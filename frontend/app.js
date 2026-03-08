@@ -87,17 +87,56 @@ function switchConversation(conversationId) {
   renderAll();
 }
 
+// 删除会话
+function deleteConversation(conversationId) {
+  const idx = state.conversations.findIndex((c) => c.id === conversationId);
+  if (idx === -1) return;
+
+  state.conversations.splice(idx, 1);
+
+  // 若删除的是当前会话，切到剩余第一条
+  if (state.activeConversationId === conversationId) {
+    state.activeConversationId = state.conversations[0]?.id ?? null;
+  }
+
+  // 至少保留一个会话，避免界面空状态
+  if (!state.conversations.length) {
+    createConversation();
+    return;
+  }
+
+  persistState();
+  renderAll();
+}
+
 // 渲染历史列表
 function renderHistory() {
   historyList.innerHTML = "";
 
   for (const convo of state.conversations) {
+    const row = document.createElement("div");
+    row.className = "history-item-wrap";
+
     const btn = document.createElement("button");
     btn.className = `history-item${convo.id === state.activeConversationId ? " active" : ""}`;
     btn.textContent = convo.title;
     btn.title = convo.title;
     btn.addEventListener("click", () => switchConversation(convo.id));
-    historyList.appendChild(btn);
+
+    const delBtn = document.createElement("button");
+    delBtn.className = "history-delete";
+    delBtn.type = "button";
+    delBtn.title = "删除聊天";
+    delBtn.setAttribute("aria-label", "删除聊天");
+    delBtn.textContent = "✕";
+    delBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteConversation(convo.id);
+    });
+
+    row.appendChild(btn);
+    row.appendChild(delBtn);
+    historyList.appendChild(row);
   }
 }
 
