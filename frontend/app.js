@@ -1,4 +1,4 @@
-// UI 交互脚本：支持多会话创建、会话历史保存、点击切换会话
+// 前端主控脚本：负责会话状态管理、消息渲染、SSE 流式接收。
 const STORAGE_KEY = "agent_ui_chat_sessions_v1";
 
 const messageList = document.getElementById("messageList");
@@ -7,14 +7,23 @@ const newChatBtn = document.getElementById("newChatBtn");
 const composerForm = document.getElementById("composerForm");
 const composerInput = document.getElementById("composerInput");
 
+// 可选后端配置：可在浏览器控制台设置 window.__CHAT_BACKEND_CONFIG__ 动态切换。
+// 例如：window.__CHAT_BACKEND_CONFIG__ = { provider: "local_http", model: "qwen2.5:7b" }
+const CHAT_BACKEND_CONFIG = window.__CHAT_BACKEND_CONFIG__ || {};
+
 const state = {
+  // 所有会话（按最近更新时间排序显示在左侧历史栏）
   conversations: [],
+  // 当前正在查看/发送消息的会话 id
   activeConversationId: null,
+  // 用于生成默认会话标题：新聊天 1/2/3...
   chatCounter: 1,
+  // 防止并发提交（一次只允许一个流式请求）
   isStreaming: false,
 };
 
 function createId() {
+  // 优先使用浏览器原生 UUID，兼容时退化为时间戳随机串。
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
   }
@@ -57,6 +66,7 @@ function isTableSeparatorLine(line) {
 }
 
 function renderAssistantMessageHtml(text) {
+  // 把助手纯文本按“普通段落 + Markdown 表格”转换成 HTML。
   const lines = text.split(/\r?\n/);
   const parts = [];
   let idx = 0;
@@ -314,6 +324,7 @@ function renderAll() {
 }
 
 async function streamAssistantReply(conversationId, assistantMessage, userText) {
+  // 通过 fetch 获取 ReadableStream，按 SSE 帧实时读取 token。
   const resp = await fetch("/api/chat/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -321,6 +332,9 @@ async function streamAssistantReply(conversationId, assistantMessage, userText) 
       session_id: conversationId,
       mode: "general",
       message: userText,
+      provider: CHAT_BACKEND_CONFIG.provider || null,
+      model: CHAT_BACKEND_CONFIG.model || null,
+      provider_options: CHAT_BACKEND_CONFIG.provider_options || null,
       stream: true,
     }),
   });
@@ -331,6 +345,7 @@ async function streamAssistantReply(conversationId, assistantMessage, userText) 
 
   const reader = resp.body.getReader();
   const decoder = new TextDecoder("utf-8");
+  // 由于网络分片可能把一帧切断，buffer 用于拼接残缺数据。
   let buffer = "";
 
   while (true) {
@@ -338,6 +353,7 @@ async function streamAssistantReply(conversationId, assistantMessage, userText) 
     if (done) break;
 
     buffer += decoder.decode(value, { stream: true });
+    // SSE 帧间隔是空行，因此按 \n\n 切帧。
     const frames = buffer.split("\n\n");
     buffer = frames.pop() || "";
 
@@ -355,6 +371,7 @@ async function streamAssistantReply(conversationId, assistantMessage, userText) 
       }
 
       if (payload?.event === "token") {
+        // token 事件为增量文本，持续追加到当前助手消息。
         const delta = payload?.payload?.delta;
         if (typeof delta === "string" && delta.length > 0) {
           assistantMessage.text += delta;
@@ -367,6 +384,7 @@ async function streamAssistantReply(conversationId, assistantMessage, userText) 
       }
 
       if (payload?.event === "final") {
+        // final 事件是兜底完整文本，防止 token 丢失导致内容不完整。
         const finalText = payload?.payload?.text;
         if (typeof finalText === "string" && finalText.trim()) {
           if (!assistantMessage.text.trim()) {
@@ -381,6 +399,7 @@ async function streamAssistantReply(conversationId, assistantMessage, userText) 
       }
 
       if (payload?.event === "error") {
+        // 统一将服务端错误抛出给 submitMessage 处理。
         throw new Error(payload?.payload?.message || "流式返回错误");
       }
     }

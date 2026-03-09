@@ -1,0 +1,10 @@
+{
+  "default_provider": "openai_compatible",
+  "openai_api_base_url": "https://yunwu.ai/v1",
+  "openai_api_key": "sk-8c5c5QqJno4M5valWVa3VzxRMLpDhI0FPjfCEU9pcYUPPlY8",
+  "openai_model_name": "gpt-5.2",
+  "local_api_url": "http://127.0.0.1:9000/chat",
+  "local_model_name": "local-default-model",
+  "request_timeout": 100,
+  "history_max_messages": 20
+}
