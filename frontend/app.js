@@ -537,18 +537,21 @@ function renderAll() {
   syncModeUi();
 }
 
-async function streamAssistantReply(conversationId, assistantMessage, userText) {
+async function streamAssistantReply(conversationId, assistantMessage, userText, options = {}) {
   // 通过 fetch 获取 ReadableStream，按 SSE 帧实时读取 token。
   const resp = await fetch("/api/chat/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       session_id: conversationId,
-      mode: "general",
+      mode: state.chatMode,
       message: userText,
       provider: CHAT_BACKEND_CONFIG.provider || null,
       model: CHAT_BACKEND_CONFIG.model || null,
-      provider_options: CHAT_BACKEND_CONFIG.provider_options || null,
+      provider_options: {
+        ...(CHAT_BACKEND_CONFIG.provider_options || {}),
+        ...options
+      },
       stream: true,
     }),
   });
@@ -621,7 +624,7 @@ async function streamAssistantReply(conversationId, assistantMessage, userText) 
 }
 
 // 发送消息：写入当前会话并通过后端流式获取回复
-async function submitMessage(text) {
+async function submitMessage(text, options = {}) {
   const convo = getActiveConversation();
   if (!convo || state.isStreaming) return;
 
@@ -648,7 +651,7 @@ async function submitMessage(text) {
   renderAll();
 
   try {
-    await streamAssistantReply(convo.id, assistantMessage, text);
+    await streamAssistantReply(convo.id, assistantMessage, text, options);
     if (!assistantMessage.text.trim()) {
       assistantMessage.text = "模型未返回文本内容。";
     }
@@ -690,6 +693,9 @@ newChatBtn.addEventListener("click", createConversation);
 // 点击后切换到专家模式，并更新欢迎语。
 taskChipBtn?.addEventListener("click", () => {
   state.chatMode = state.chatMode === "expert" ? "general" : "expert";
+  if (state.chatMode !== "expert") {
+    state.sqlAnalysisEnabled = false;
+  }
   syncModeUi();
   persistState();
 });
@@ -708,14 +714,45 @@ fileUploadBtn?.addEventListener("click", () => {
   fileUploadInput?.click();
 });
 
-fileUploadInput?.addEventListener("change", () => {
+fileUploadInput?.addEventListener("change", async () => {
   const file = fileUploadInput.files?.[0] || null;
-  state.uploadedFile = file;
-  state.uploadedFileName = file ? file.name : "";
-  syncModeUi();
+  if (!file) return;
+
+  // --- 新增：发送文件到后端 ---
+  const formData = new FormData();
+  formData.append("file", file);
+
+  try {
+    const resp = await fetch("/api/upload", {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!resp.ok) throw new Error("上传失败");
+
+    const result = await resp.json();
+    console.log("Upload response:", result);
+
+    // 适配后端返回的 file_name 字段
+    if (result && result.file_name) {
+      state.uploadedFile = file;
+      state.uploadedFileName = result.file_name;
+      syncModeUi();
+      alert("上传成功！");
+    } else {
+      throw new Error("后端返回格式不正确");
+    }
+  } catch (err) {
+    console.error("上传明细:", err);
+    alert("文件上传失败: " + err.message);
+  }
 });
 
 sqlAnalysisToggleBtn?.addEventListener("click", () => {
+  if (state.chatMode !== "expert") {
+    alert("请先开启『专家模式』后再使用 SQL 分析功能。");
+    return;
+  }
   state.sqlAnalysisEnabled = !state.sqlAnalysisEnabled;
   syncModeUi();
   persistState();
@@ -731,11 +768,17 @@ htmlPreviewCloseBtn?.addEventListener("click", () => {
 composerForm.addEventListener("submit", (e) => {
   e.preventDefault();
   const text = composerInput.value.trim();
-  if (!text) return;
+  if (!text || state.isStreaming) return;
 
-  submitMessage(text);
+  const dynamicOptions = {
+    sql_analysis: !!state.sqlAnalysisEnabled,
+    file_name: state.uploadedFileName || null
+  };
+
+  submitMessage(text, dynamicOptions);
   composerInput.value = "";
-  autoResizeTextarea();
+  if (typeof autoResizeTextarea === 'function') autoResizeTextarea();
+
 });
 
 // 初始化：优先恢复本地历史，否则新建一个会话

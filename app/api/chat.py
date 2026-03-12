@@ -29,7 +29,7 @@ async def chat_stream(req: ChatRequest, chat_service: ChatService = Depends(get_
 
     async def event_generator() -> AsyncGenerator[str, None]:
         # 把服务层产生的事件字典转换为 SSE 文本帧。
-        for event in chat_service.stream_chat_events(
+        async for event in chat_service.stream_chat_events(
             req.session_id,
             req.mode,
             req.message,

@@ -5,13 +5,17 @@
 - 按 provider 调用不同后端并开启流式返回
 - 把模型分片结果转换为前端可消费事件
 """
-
-from collections.abc import Generator
+import os
+import asyncio
+from typing import AsyncGenerator
 from threading import Lock
 from typing import Any
 
 from app.config import AppConfig
 from app.services.providers.registry import ProviderRegistry
+
+from langchain_core.messages import HumanMessage
+from backend.SQLagent.main import get_sql_graph_app
 
 
 class ChatService:
@@ -83,64 +87,130 @@ class ChatService:
         with self._lock:
             return self._sessions.pop(session_id, None) is not None
 
-    def stream_chat_events(
-        self,
-        session_id: str,
-        mode: str,
-        user_message: str,
-        provider: str | None = None,
-        model: str | None = None,
-        provider_options: dict[str, Any] | None = None,
-    ) -> Generator[dict[str, Any], None, None]:
+    async def stream_chat_events(
+            self,
+            session_id: str,
+            mode: str,
+            user_message: str,
+            provider: str | None = None,
+            model: str | None = None,
+            provider_options: dict[str, Any] | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """按顺序产出聊天事件：token/final/error。
 
         该生成器由路由层消费，并封装为 SSE 流返回前端。
         """
 
-        provider_name = self._resolve_provider_name(provider)
-        selected_model = self._resolve_model_name(provider_name, model)
+        opts = provider_options or {}
+        is_sql_mode = opts.get("sql_analysis", False)
 
-        # 先保存用户消息，使其进入本轮上下文。
-        self._append_session_message(session_id=session_id, role="user", content=user_message)
-        messages = self._build_messages(session_id=session_id, mode=mode)
+        # --- 情况 A: 运行 SQL 专家 Agent ---
+        if is_sql_mode:
+            self._append_session_message(session_id, "user", user_message)
+            raw_file_names = opts.get("file_name", "")
+            if isinstance(raw_file_names, str):
+                # 兼容 "data1.csv,data2.csv" 这种格式
+                file_list = [f.strip() for f in raw_file_names.split(",") if f.strip()]
+            else:
+                file_list = [raw_file_names] if raw_file_names else []
 
-        # 流式过程中持续累积完整回复文本。
-        full_text = ""
-        try:
-            provider_impl = self.provider_registry.get(provider_name)
-            stream = provider_impl.stream_chat(
-                model=selected_model,
-                messages=messages,
-                timeout=self.config.request_timeout,
-                provider_options=provider_options,
-            )
+            # 3. 构建绝对路径并校验文件是否存在
+            valid_paths = []
+            for f_name in file_list:
+                # 确保路径与 upload.py 保存的位置严格一致
+                full_path = os.path.join(os.getcwd(), "backend", "dataset", f_name)
+                if os.path.exists(full_path):
+                    valid_paths.append(full_path)
+                else:
+                    print(f"⚠️ 警告: 文件未找到，跳过: {full_path}")
 
-            for chunk in stream:
-                if not isinstance(chunk, str) or not chunk:
-                    continue
+            # 4. 获取动态编译的 Graph App
+            # 每次请求动态创建 engine，保证多用户并发时数据库隔离
+            graph_app = get_sql_graph_app(db_type="sqlite")
 
-                full_text += chunk
-                # token 事件供前端实时增量渲染。
+            config = {"configurable": {"thread_id": session_id}}
+            inputs = {
+                "messages": [HumanMessage(content=user_message)],
+                "db_type": "sqlite",
+                "excel_paths": valid_paths, # 这里现在是完整的路径列表
+                "retry_count": 0
+            }
+
+            full_analysis_text = "" # 用于保存完整回复
+            try:
+                async for chunk in graph_app.astream(inputs, config=config, stream_mode="updates"):
+                    if "sql_gen" in chunk:
+                        sql = chunk["sql_gen"].get("sql_query")
+                        yield {
+                            "event": "token",
+                            "payload": {"delta": f"\n> **🔍 正在生成 SQL:**\n> ```sql\n> {sql}\n> ```\n"}
+                        }
+
+                    if "analysis" in chunk:
+                        ans = chunk["analysis"].get("analysis", "")
+                        full_analysis_text += ans # 这一步非常重要！
+                        yield {
+                            "event": "token",
+                            "payload": {"delta": ans}
+                        }
+
+                # 只有保存了，下一次对话才能带上这个上下文
+                if full_analysis_text:
+                    self._append_session_message(session_id, "assistant", full_analysis_text)
+                    yield {
+                        "event": "final",
+                        "payload": {"text": full_analysis_text}
+                    }
+
+            except Exception as exc:
                 yield {
-                    "event": "token",
-                    "content_type": "text",
-                    "payload": {"delta": chunk},
+                    "event": "error",
+                    "payload": {"message": f"SQL Agent 运行出错：{str(exc)}"}
                 }
+        else:
 
-            # 保存助手完整回复，作为后续对话上下文。
-            assistant_text = full_text or "处理完成。"
-            self._append_session_message(session_id=session_id, role="assistant", content=assistant_text)
+            provider_name = self._resolve_provider_name(provider)
+            selected_model = self._resolve_model_name(provider_name, model)
 
-            # final 事件返回完整文本，作为兜底结果。
-            yield {
-                "event": "final",
-                "content_type": "text",
-                "payload": {"text": assistant_text},
-            }
-        except Exception as exc:
-            # 将模型调用异常统一转换为错误事件给前端处理。
-            yield {
-                "event": "error",
-                "content_type": "text",
-                "payload": {"message": f"模型调用失败：{str(exc)}"},
-            }
+            # 先保存用户消息，使其进入本轮上下文。
+            self._append_session_message(session_id=session_id, role="user", content=user_message)
+            messages = self._build_messages(session_id=session_id, mode=mode)
+
+            # 流式过程中持续累积完整回复文本。
+            full_text = ""
+            try:
+                provider_impl = self.provider_registry.get(provider_name)
+                stream = provider_impl.stream_chat(
+                    model=selected_model,
+                    messages=messages,
+                    timeout=self.config.request_timeout,
+                    provider_options=provider_options,
+                )
+
+                for chunk in stream:
+                    if not isinstance(chunk, str) or not chunk:
+                        continue
+                    full_text += chunk
+                    yield {
+                        "event": "token",
+                        "payload": {"delta": chunk},
+                    }
+                    await asyncio.sleep(0)
+
+                # 保存助手完整回复，作为后续对话上下文。
+                assistant_text = full_text or "处理完成。"
+                self._append_session_message(session_id=session_id, role="assistant", content=assistant_text)
+
+                # final 事件返回完整文本，作为兜底结果。
+                yield {
+                    "event": "final",
+                    "content_type": "text",
+                    "payload": {"text": assistant_text},
+                }
+            except Exception as exc:
+                # 将模型调用异常统一转换为错误事件给前端处理。
+                yield {
+                    "event": "error",
+                    "content_type": "text",
+                    "payload": {"message": f"模型调用失败：{str(exc)}"},
+                }
