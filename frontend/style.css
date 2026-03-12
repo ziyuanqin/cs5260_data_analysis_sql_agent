@@ -205,6 +205,18 @@ textarea {
   overflow: hidden;
 }
 
+.main.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+}
+
+.main.empty .main-topbar {
+  display: none;
+}
+
 .main-topbar {
   height: 60px;
   display: flex;
@@ -213,8 +225,17 @@ textarea {
   padding: 0 22px;
 }
 
-.model-switch,
-.icon-btn {
+.content-row {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.main.with-html-preview .content-row {
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 42vw);
+}
+
+.model-switch {
   border: 0;
   background: transparent;
   cursor: pointer;
@@ -229,7 +250,6 @@ textarea {
   padding-left: 0;
 }
 
-.icon-btn:hover,
 .model-switch:hover {
   background: #eef0f3;
 }
@@ -242,6 +262,95 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 24px;
+}
+
+.html-preview {
+  border: 1px solid #d8e1ec;
+  background: #ffffff;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: 14px;
+  overflow: hidden;
+  margin: 12px 16px 12px 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.07);
+}
+
+.html-preview[hidden] {
+  display: none !important;
+}
+
+.html-preview-title {
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  font-size: 13px;
+  color: #475569;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.html-preview-close {
+  border: 1px solid #d4dbe6;
+  background: #f8fafc;
+  color: #334155;
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.html-preview-close:hover {
+  background: #eef2f7;
+}
+
+.html-preview-frame {
+  border: 0;
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+  background: #fff;
+}
+
+.main.with-html-preview .conversation {
+  padding-right: 12px;
+}
+
+.main.with-html-preview .msg {
+  width: min(680px, 100%);
+}
+
+.main.with-html-preview .bubble {
+  max-width: 100%;
+}
+
+.main.empty .conversation {
+  width: 100%;
+  min-height: auto;
+  align-items: center;
+  justify-content: flex-end;
+  overflow: visible;
+  padding: 0 24px;
+}
+
+.empty-state {
+  display: none;
+  width: min(760px, 100%);
+  text-align: center;
+  margin: 0;
+}
+
+.main.empty .empty-state {
+  display: block;
+}
+
+.empty-title {
+  margin: 0;
+  color: #101935;
+  font-size: clamp(34px, 5.5vw, 56px);
+  font-weight: 500;
+  letter-spacing: 0.5px;
 }
 
 .msg {
@@ -327,9 +436,19 @@ textarea {
 
 /* 底部输入区域 */
 .composer-wrap {
+  z-index: 5;
+}
+
+.main.empty .composer-wrap {
+  position: static;
+  width: 100%;
+  padding: 0 24px;
+  background: transparent;
+}
+
+.main.has-messages .composer-wrap {
   position: sticky;
   bottom: 0;
-  z-index: 5;
   padding: 12px 20px 8px;
   background: linear-gradient(to top, var(--bg) 72%, rgba(247, 247, 248, 0));
 }
@@ -344,9 +463,31 @@ textarea {
   padding: 10px 12px;
   display: grid;
   grid-template-columns: 36px 1fr 36px;
+  grid-template-areas:
+    "plus input send"
+    "chips chips chips"
+    "upload upload upload";
   align-items: center;
-  gap: 6px;
+  gap: 8px 6px;
   box-shadow: 0 6px 22px rgba(17, 24, 39, 0.06);
+}
+
+.main.empty .composer {
+  width: min(760px, 100%);
+  grid-template-columns: 1fr 36px;
+  grid-template-areas:
+    "input send"
+    "chips chips"
+    "upload upload";
+  row-gap: 10px;
+}
+
+.main.has-messages .composer {
+  width: min(820px, 100%);
+  min-height: 60px;
+  border-radius: 24px;
+  padding: 10px 12px;
+  gap: 6px;
 }
 
 .composer textarea {
@@ -358,6 +499,17 @@ textarea {
   padding: 8px 6px;
   background: transparent;
   color: #111827;
+  font-size: 16px;
+  grid-area: input;
+}
+
+.main.has-messages .composer textarea {
+  height: 38px;
+  font-size: 16px;
+}
+
+.composer textarea::placeholder {
+  color: #a1a5b1;
 }
 
 .circle-btn,
@@ -372,13 +524,85 @@ textarea {
   place-items: center;
 }
 
+.feature-chip {
+  border: 1px solid #e2e5eb;
+  background: #f8f9fb;
+  color: #4a5368;
+  height: 34px;
+  border-radius: 999px;
+  padding: 0 14px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.feature-chip:hover {
+  background: #eef1f6;
+}
+
+.chip-row {
+  grid-area: chips;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.upload-status {
+  grid-area: upload;
+  font-size: 12px;
+  color: #6b7280;
+}
+
 .circle-btn:hover {
   background: #f1f3f5;
 }
 
+.circle-btn {
+  grid-area: plus;
+}
+
 .circle-send {
-  background: var(--brand);
+  background: #111827;
   color: #fff;
+  font-size: 18px;
+  grid-area: send;
+}
+
+.circle-send:hover {
+  background: #0a1020;
+}
+
+.main.has-messages .circle-send {
+  width: 34px;
+  height: 34px;
+  font-size: 18px;
+  background: var(--brand);
+}
+
+.main.empty .circle-btn {
+  display: none;
+}
+
+.main.has-messages .composer {
+  grid-template-columns: 36px 1fr 36px;
+  grid-template-areas:
+    "plus input send"
+    "chips chips chips"
+    "upload upload upload";
+}
+
+.main.has-messages .feature-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+.feature-chip.active {
+  border-color: #c6d2f5;
+  background: #e9eefc;
+  color: #273869;
 }
 
 @media (max-width: 920px) {
@@ -388,6 +612,61 @@ textarea {
 
   .sidebar {
     display: none;
+  }
+
+  .main.empty .conversation {
+    padding: 0 16px;
+  }
+
+  .main.with-html-preview .content-row {
+    grid-template-columns: 1fr;
+  }
+
+  .html-preview {
+    display: none;
+  }
+
+  .empty-state {
+    margin: 0;
+  }
+
+  .empty-title {
+    font-size: clamp(32px, 10vw, 46px);
+  }
+
+  .main.empty .composer-wrap,
+  .main.has-messages .composer-wrap {
+    padding: 0 12px 16px;
+  }
+
+  .main.empty .composer-wrap {
+    padding: 0 12px;
+  }
+
+  .composer {
+    min-height: 60px;
+    border-radius: 24px;
+    padding: 14px;
+    gap: 6px;
+  }
+
+  .main.empty .composer {
+    grid-template-columns: 1fr 34px;
+    grid-template-areas:
+      "input send"
+      "chips chips"
+      "upload upload";
+  }
+
+  .composer textarea {
+    height: 38px;
+    font-size: 16px;
+  }
+
+  .circle-send {
+    width: 34px;
+    height: 34px;
+    font-size: 18px;
   }
 
   .model-switch {

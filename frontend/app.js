@@ -6,10 +6,26 @@ const historyList = document.getElementById("historyList");
 const newChatBtn = document.getElementById("newChatBtn");
 const composerForm = document.getElementById("composerForm");
 const composerInput = document.getElementById("composerInput");
+const mainPanel = document.getElementById("mainPanel");
+const emptyState = document.getElementById("emptyState");
+const emptyTitle = document.getElementById("emptyTitle");
+const htmlPreviewPane = document.getElementById("htmlPreviewPane");
+const htmlPreviewFrame = document.getElementById("htmlPreviewFrame");
+const htmlPreviewCloseBtn = document.getElementById("htmlPreviewCloseBtn");
+const taskChipBtn = document.getElementById("taskChipBtn");
+const fileUploadBtn = document.getElementById("fileUploadBtn");
+const fileUploadInput = document.getElementById("fileUploadInput");
+const uploadStatus = document.getElementById("uploadStatus");
+const sqlAnalysisToggleBtn = document.getElementById("sqlAnalysisToggleBtn");
+const modelSwitch = document.querySelector(".model-switch");
 
 // 可选后端配置：可在浏览器控制台设置 window.__CHAT_BACKEND_CONFIG__ 动态切换。
 // 例如：window.__CHAT_BACKEND_CONFIG__ = { provider: "local_http", model: "qwen2.5:7b" }
 const CHAT_BACKEND_CONFIG = window.__CHAT_BACKEND_CONFIG__ || {};
+let htmlPreviewDismissed = false;
+let lastHtmlPreviewContent = "";
+let currentHtmlPreviewSourceKey = "";
+let dismissedHtmlPreviewSourceKey = "";
 
 const state = {
   // 所有会话（按最近更新时间排序显示在左侧历史栏）
@@ -20,7 +36,54 @@ const state = {
   chatCounter: 1,
   // 防止并发提交（一次只允许一个流式请求）
   isStreaming: false,
+  // UI 模式：点击专家模式按钮后切换欢迎语。
+  chatMode: "general",
+  uploadedFileName: "",
+  uploadedFile: null,
+  sqlAnalysisEnabled: false,
 };
+
+function getModeGreetingText() {
+  return state.chatMode === "expert" ? "你好，我是专家模式" : "你好，我是通用模式";
+}
+
+function syncModeUi() {
+  const isExpert = state.chatMode === "expert";
+
+  if (modelSwitch) {
+    modelSwitch.textContent = isExpert ? "专家模式▾" : "通用模式▾";
+  }
+
+  if (emptyTitle) {
+    emptyTitle.textContent = getModeGreetingText();
+  }
+
+  if (taskChipBtn) {
+    taskChipBtn.classList.toggle("active", isExpert);
+    taskChipBtn.textContent = isExpert ? "★ 专家模式" : "✶ 专家模式";
+    taskChipBtn.setAttribute("aria-pressed", String(isExpert));
+    taskChipBtn.title = isExpert ? "点击切回通用模式" : "点击切换到专家模式";
+  }
+
+  if (fileUploadBtn) {
+    const hasUpload = Boolean(state.uploadedFileName);
+    fileUploadBtn.classList.toggle("active", hasUpload);
+    fileUploadBtn.setAttribute("aria-pressed", String(hasUpload));
+    fileUploadBtn.title = hasUpload ? "点击清空已上传文件" : "点击上传文件";
+  }
+
+  if (uploadStatus) {
+    const hasUpload = Boolean(state.uploadedFileName);
+    uploadStatus.hidden = !hasUpload;
+    uploadStatus.textContent = hasUpload ? `已上传: ${state.uploadedFileName}` : "";
+  }
+
+  if (sqlAnalysisToggleBtn) {
+    sqlAnalysisToggleBtn.classList.toggle("active", state.sqlAnalysisEnabled);
+    sqlAnalysisToggleBtn.setAttribute("aria-pressed", String(state.sqlAnalysisEnabled));
+    sqlAnalysisToggleBtn.title = state.sqlAnalysisEnabled ? "点击关闭SQL分析" : "点击开启SQL分析";
+  }
+}
 
 function createId() {
   // 优先使用浏览器原生 UUID，兼容时退化为时间戳随机串。
@@ -37,7 +100,14 @@ function normalizeMessages(rawMessages) {
       role: msg?.role === "user" ? "user" : "assistant",
       text: typeof msg?.text === "string" ? msg.text : "",
     }))
-    .filter((msg) => msg.text.trim().length > 0);
+    .filter((msg) => msg.text.trim().length > 0)
+    .filter((msg) => !(msg.role === "assistant" && isLegacyWelcomeText(msg.text)));
+}
+
+function isLegacyWelcomeText(text) {
+  if (typeof text !== "string") return false;
+  const normalized = text.replaceAll("～", "~").trim();
+  return normalized === "你好~可以开始新对话了";
 }
 
 function escapeHtml(text) {
@@ -134,6 +204,138 @@ function getActiveConversation() {
   return state.conversations.find((c) => c.id === state.activeConversationId) || null;
 }
 
+function isConversationEmpty(convo) {
+  if (!convo || !Array.isArray(convo.messages)) return true;
+  return convo.messages.length === 0;
+}
+
+function syncMainLayout() {
+  const convo = getActiveConversation();
+  const empty = isConversationEmpty(convo);
+  mainPanel.classList.toggle("empty", empty);
+  mainPanel.classList.toggle("has-messages", !empty);
+  if (emptyState) {
+    emptyState.style.display = empty ? "block" : "none";
+  }
+}
+
+function decodeHtmlEntities(text) {
+  const textarea = document.createElement("textarea");
+  textarea.innerHTML = text;
+  return textarea.value;
+}
+
+function wrapHtmlFragment(fragment) {
+  return `<!doctype html>\n<html lang="zh-CN">\n<head>\n<meta charset="UTF-8" />\n<meta name="viewport" content="width=device-width, initial-scale=1.0" />\n</head>\n<body>\n${fragment}\n</body>\n</html>`;
+}
+
+function normalizeHtmlForPreview(candidate) {
+  if (typeof candidate !== "string") return null;
+  const trimmed = decodeHtmlEntities(candidate).trim();
+  if (!trimmed) return null;
+
+  if (/<!doctype\s+html/i.test(trimmed) || /<html[\s>]/i.test(trimmed)) {
+    return trimmed;
+  }
+
+  const hasBlockTag = /<(div|main|section|article|header|footer|table|form|ul|ol|p|h1|h2|h3|canvas|svg)(\s|>)/i.test(trimmed);
+  const hasClosingTag = /<\/(div|main|section|article|header|footer|table|form|ul|ol|p|h1|h2|h3|canvas|svg)>/i.test(trimmed);
+  if (hasBlockTag && hasClosingTag) {
+    return wrapHtmlFragment(trimmed);
+  }
+
+  return null;
+}
+
+function extractHtmlFromText(text) {
+  if (typeof text !== "string" || !text.trim()) return null;
+
+  const fencedMatch = text.match(/```html\s*([\s\S]*?)```/i);
+  if (fencedMatch && fencedMatch[1]) {
+    const normalized = normalizeHtmlForPreview(fencedMatch[1]);
+    if (normalized) return normalized;
+  }
+
+  const genericFenced = text.match(/```\s*([\s\S]*?)```/);
+  if (genericFenced && genericFenced[1]) {
+    const normalized = normalizeHtmlForPreview(genericFenced[1]);
+    if (normalized) return normalized;
+  }
+
+  const fullDocMatch = text.match(/<!doctype\s+html[\s\S]*?<\/html>/i) || text.match(/<html[\s\S]*?<\/html>/i);
+  if (fullDocMatch && fullDocMatch[0]) {
+    const normalized = normalizeHtmlForPreview(fullDocMatch[0]);
+    if (normalized) return normalized;
+  }
+
+  const fragmentStart = text.search(/<(div|main|section|article|header|footer|table|form|ul|ol|p|h1|h2|h3|canvas|svg)(\s|>)/i);
+  if (fragmentStart >= 0) {
+    const normalized = normalizeHtmlForPreview(text.slice(fragmentStart));
+    if (normalized) return normalized;
+  }
+
+  return null;
+}
+
+function findLatestHtmlFromConversation(convo) {
+  if (!convo || !Array.isArray(convo.messages)) return { html: null, sourceKey: "" };
+
+  for (let i = convo.messages.length - 1; i >= 0; i -= 1) {
+    const msg = convo.messages[i];
+    if (msg?.role !== "assistant") continue;
+    const html = extractHtmlFromText(msg.text);
+    if (html) {
+      return {
+        html,
+        sourceKey: `${convo.id}:${i}`,
+      };
+    }
+  }
+
+  return { html: null, sourceKey: "" };
+}
+
+function syncHtmlPreview(previewData) {
+  if (!htmlPreviewPane || !htmlPreviewFrame) return;
+
+  const htmlText = previewData?.html ?? null;
+  const sourceKey = previewData?.sourceKey ?? "";
+  const hasHtml = typeof htmlText === "string" && htmlText.trim().length > 0;
+  const normalizedHtml = hasHtml ? htmlText.trim() : "";
+
+  currentHtmlPreviewSourceKey = sourceKey;
+
+  if (!hasHtml) {
+    htmlPreviewDismissed = false;
+    lastHtmlPreviewContent = "";
+    dismissedHtmlPreviewSourceKey = "";
+    currentHtmlPreviewSourceKey = "";
+  } else if (normalizedHtml !== lastHtmlPreviewContent) {
+    lastHtmlPreviewContent = normalizedHtml;
+    if (sourceKey !== dismissedHtmlPreviewSourceKey) {
+      htmlPreviewDismissed = false;
+    }
+  }
+
+  const shouldShow = hasHtml && !htmlPreviewDismissed;
+  htmlPreviewPane.hidden = !shouldShow;
+  mainPanel.classList.toggle("with-html-preview", shouldShow);
+
+  if (shouldShow) {
+    htmlPreviewFrame.srcdoc = normalizedHtml;
+  } else {
+    htmlPreviewFrame.srcdoc = "";
+  }
+}
+
+function clearHtmlPreviewState() {
+  htmlPreviewDismissed = false;
+  lastHtmlPreviewContent = "";
+  currentHtmlPreviewSourceKey = "";
+  dismissedHtmlPreviewSourceKey = "";
+  syncHtmlPreview({ html: null, sourceKey: "" });
+}
+
 async function resetConversationOnServer(conversationId) {
   if (!conversationId) return;
 
@@ -156,6 +358,8 @@ function persistState() {
       conversations: state.conversations,
       activeConversationId: state.activeConversationId,
       chatCounter: state.chatCounter,
+      chatMode: state.chatMode,
+      sqlAnalysisEnabled: state.sqlAnalysisEnabled,
     })
   );
 }
@@ -180,9 +384,7 @@ function restoreState() {
               : `新聊天 ${index + 1}`,
           createdAt: Number(convo?.createdAt || Date.now()),
           updatedAt: Number(convo?.updatedAt || Date.now()),
-          messages: messages.length
-            ? messages
-            : [{ role: "assistant", text: "你好~可以开始新对话了" }],
+          messages,
         };
       })
       .filter((convo) => convo.id);
@@ -194,6 +396,8 @@ function restoreState() {
       normalizedConversations.find((c) => c.id === parsed.activeConversationId)?.id ||
       normalizedConversations[0].id;
     state.chatCounter = Number(parsed.chatCounter || normalizedConversations.length + 1);
+    state.chatMode = parsed.chatMode === "expert" ? "expert" : "general";
+    state.sqlAnalysisEnabled = Boolean(parsed.sqlAnalysisEnabled);
 
     if (!Number.isFinite(state.chatCounter) || state.chatCounter < 1) {
       state.chatCounter = normalizedConversations.length + 1;
@@ -213,12 +417,13 @@ function createConversation() {
     title: `新聊天 ${state.chatCounter}`,
     createdAt: Date.now(),
     updatedAt: Date.now(),
-    messages: [{ role: "assistant", text: "你好~可以开始新对话了" }],
+    messages: [],
   };
 
   state.chatCounter += 1;
   state.conversations.unshift(convo);
   state.activeConversationId = id;
+  clearHtmlPreviewState();
 
   persistState();
   renderAll();
@@ -294,7 +499,13 @@ function renderMessages() {
   if (!convo) return;
 
   if (!Array.isArray(convo.messages)) {
-    convo.messages = [{ role: "assistant", text: "你好~可以开始新对话了" }];
+    convo.messages = [];
+  }
+
+  if (isConversationEmpty(convo) && emptyState) {
+    messageList.appendChild(emptyState);
+    syncHtmlPreview({ html: null, sourceKey: "" });
+    return;
   }
 
   for (const msg of convo.messages) {
@@ -315,12 +526,15 @@ function renderMessages() {
   }
 
   messageList.scrollTop = messageList.scrollHeight;
+  syncHtmlPreview(findLatestHtmlFromConversation(convo));
 }
 
 // 统一刷新
 function renderAll() {
   renderHistory();
   renderMessages();
+  syncMainLayout();
+  syncModeUi();
 }
 
 async function streamAssistantReply(conversationId, assistantMessage, userText) {
@@ -473,6 +687,46 @@ composerInput.addEventListener("input", autoResizeTextarea);
 // 新聊天按钮
 newChatBtn.addEventListener("click", createConversation);
 
+// 点击后切换到专家模式，并更新欢迎语。
+taskChipBtn?.addEventListener("click", () => {
+  state.chatMode = state.chatMode === "expert" ? "general" : "expert";
+  syncModeUi();
+  persistState();
+});
+
+fileUploadBtn?.addEventListener("click", () => {
+  if (state.uploadedFileName) {
+    state.uploadedFileName = "";
+    state.uploadedFile = null;
+    if (fileUploadInput) {
+      fileUploadInput.value = "";
+    }
+    syncModeUi();
+    return;
+  }
+
+  fileUploadInput?.click();
+});
+
+fileUploadInput?.addEventListener("change", () => {
+  const file = fileUploadInput.files?.[0] || null;
+  state.uploadedFile = file;
+  state.uploadedFileName = file ? file.name : "";
+  syncModeUi();
+});
+
+sqlAnalysisToggleBtn?.addEventListener("click", () => {
+  state.sqlAnalysisEnabled = !state.sqlAnalysisEnabled;
+  syncModeUi();
+  persistState();
+});
+
+htmlPreviewCloseBtn?.addEventListener("click", () => {
+  htmlPreviewDismissed = true;
+  dismissedHtmlPreviewSourceKey = currentHtmlPreviewSourceKey;
+  syncHtmlPreview({ html: lastHtmlPreviewContent, sourceKey: currentHtmlPreviewSourceKey });
+});
+
 // 提交消息
 composerForm.addEventListener("submit", (e) => {
   e.preventDefault();
@@ -485,6 +739,7 @@ composerForm.addEventListener("submit", (e) => {
 });
 
 // 初始化：优先恢复本地历史，否则新建一个会话
+clearHtmlPreviewState();
 if (!restoreState()) {
   createConversation();
 } else {

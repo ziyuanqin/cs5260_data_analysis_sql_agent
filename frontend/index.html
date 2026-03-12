@@ -29,20 +29,28 @@
       </aside>
 
       <!-- 右侧主内容区 -->
-      <main class="main">
+      <main id="mainPanel" class="main empty">
         <!-- 顶部操作栏 -->
         <header class="main-topbar">
           <button class="model-switch">普通模型▾</button>
         </header>
 
-        <!-- 聊天内容区 -->
-        <section id="messageList" class="conversation" aria-live="polite">
-          <article class="msg assistant">
-            <div class="bubble">
-               你好～可以开始新对话了
+        <div class="content-row">
+          <!-- 聊天内容区 -->
+          <section id="messageList" class="conversation" aria-live="polite">
+            <div id="emptyState" class="empty-state">
+              <h1 id="emptyTitle" class="empty-title">你好，我是通用模式</h1>
             </div>
-          </article>
-        </section>
+          </section>
+
+          <aside id="htmlPreviewPane" class="html-preview" hidden>
+            <div class="html-preview-title">
+              <span>HTML预览</span>
+              <button id="htmlPreviewCloseBtn" class="html-preview-close" type="button" aria-label="关闭HTML预览">关闭</button>
+            </div>
+            <iframe id="htmlPreviewFrame" class="html-preview-frame" sandbox="allow-scripts allow-forms"></iframe>
+          </aside>
+        </div>
 
         <!-- 底部输入栏（悬浮样式） -->
         <footer class="composer-wrap">
@@ -50,6 +58,13 @@
             <button class="circle-btn" type="button" aria-label="更多">＋</button>
             <textarea id="composerInput" rows="1" placeholder="有问题，尽管问"></textarea>
             <button id="sendBtn" class="circle-send" type="submit" aria-label="发送">➤</button>
+            <div class="chip-row" aria-label="功能开关">
+              <button id="taskChipBtn" class="feature-chip" type="button">✶ 专家模式</button>
+              <button id="fileUploadBtn" class="feature-chip" type="button">文件上传</button>
+              <button id="sqlAnalysisToggleBtn" class="feature-chip" type="button">SQL分析</button>
+            </div>
+            <input id="fileUploadInput" type="file" hidden />
+            <div id="uploadStatus" class="upload-status" aria-live="polite" hidden></div>
           </form>
         </footer>
       </main>
