@@ -8,6 +8,24 @@ from openai import OpenAI
 class OpenAICompatibleProvider:
     """适配 OpenAI SDK 的流式调用。"""
 
+    _ALLOWED_CHAT_COMPLETION_OPTIONS = {
+        "temperature",
+        "top_p",
+        "max_tokens",
+        "stop",
+        "presence_penalty",
+        "frequency_penalty",
+        "logit_bias",
+        "seed",
+        "n",
+        "user",
+        "tools",
+        "tool_choice",
+        "response_format",
+        "parallel_tool_calls",
+        "stream_options",
+    }
+
     def __init__(self, base_url: str, api_key: str | None):
         self.client = OpenAI(base_url=base_url, api_key=api_key) if api_key else None
 
@@ -21,12 +39,18 @@ class OpenAICompatibleProvider:
         if self.client is None:
             raise RuntimeError("未配置 OpenAI 兼容后端密钥。")
 
+        safe_options = {
+            key: value
+            for key, value in (provider_options or {}).items()
+            if key in self._ALLOWED_CHAT_COMPLETION_OPTIONS
+        }
+
         stream = self.client.chat.completions.create(
             model=model,
             messages=messages,
             stream=True,
             timeout=timeout,
-            **(provider_options or {}),
+            **safe_options,
         )
 
         for chunk in stream:

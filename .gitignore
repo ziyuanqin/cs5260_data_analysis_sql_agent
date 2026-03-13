@@ -1,0 +1,7 @@
+# Python cache
+__pycache__/
+**/__pycache__/
+
+# Local uploaded datasets
+dataset/
+backend/dataset/

@@ -550,6 +550,35 @@ textarea {
   grid-area: upload;
   font-size: 12px;
   color: #6b7280;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.upload-file-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  border: 1px solid #dbe2ee;
+  border-radius: 999px;
+  background: #f8fafc;
+  padding: 0 10px;
+  color: #4b5563;
+}
+
+.upload-file-remove {
+  border: 0;
+  background: transparent;
+  color: #6b7280;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.upload-file-remove:hover {
+  color: #111827;
 }
 
 .circle-btn:hover {

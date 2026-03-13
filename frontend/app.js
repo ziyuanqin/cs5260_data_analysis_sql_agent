@@ -38,10 +38,31 @@ const state = {
   isStreaming: false,
   // UI 模式：点击专家模式按钮后切换欢迎语。
   chatMode: "general",
-  uploadedFileName: "",
-  uploadedFile: null,
+  uploadedFiles: [],
   sqlAnalysisEnabled: false,
 };
+
+function fileIdentity(file) {
+  return `${file.name}__${file.size}__${file.lastModified}`;
+}
+
+function renderUploadedFiles() {
+  if (!uploadStatus) return;
+
+  if (!state.uploadedFiles.length) {
+    uploadStatus.hidden = true;
+    uploadStatus.innerHTML = "";
+    return;
+  }
+
+  uploadStatus.hidden = false;
+  uploadStatus.innerHTML = state.uploadedFiles
+    .map(
+      (item) =>
+        `<span class="upload-file-item">${escapeHtml(item.name)}<button class="upload-file-remove" data-file-id="${escapeHtml(item.id)}" type="button" aria-label="删除文件">✕</button></span>`
+    )
+    .join("");
+}
 
 function getModeGreetingText() {
   return state.chatMode === "expert" ? "你好，我是专家模式" : "你好，我是通用模式";
@@ -66,17 +87,12 @@ function syncModeUi() {
   }
 
   if (fileUploadBtn) {
-    const hasUpload = Boolean(state.uploadedFileName);
-    fileUploadBtn.classList.toggle("active", hasUpload);
-    fileUploadBtn.setAttribute("aria-pressed", String(hasUpload));
-    fileUploadBtn.title = hasUpload ? "点击清空已上传文件" : "点击上传文件";
+    fileUploadBtn.classList.remove("active");
+    fileUploadBtn.setAttribute("aria-pressed", "false");
+    fileUploadBtn.title = "点击上传文件";
   }
 
-  if (uploadStatus) {
-    const hasUpload = Boolean(state.uploadedFileName);
-    uploadStatus.hidden = !hasUpload;
-    uploadStatus.textContent = hasUpload ? `已上传: ${state.uploadedFileName}` : "";
-  }
+  renderUploadedFiles();
 
   if (sqlAnalysisToggleBtn) {
     sqlAnalysisToggleBtn.classList.toggle("active", state.sqlAnalysisEnabled);
@@ -655,6 +671,10 @@ async function submitMessage(text, options = {}) {
     if (!assistantMessage.text.trim()) {
       assistantMessage.text = "模型未返回文本内容。";
     }
+
+    // 本轮消息发送成功后，清空已上传文件标签，避免影响下一轮输入。
+    state.uploadedFiles = [];
+    syncModeUi();
   } catch (err) {
     assistantMessage.text = `请求失败：${err?.message || "未知错误"}`;
   } finally {
@@ -701,51 +721,57 @@ taskChipBtn?.addEventListener("click", () => {
 });
 
 fileUploadBtn?.addEventListener("click", () => {
-  if (state.uploadedFileName) {
-    state.uploadedFileName = "";
-    state.uploadedFile = null;
-    if (fileUploadInput) {
-      fileUploadInput.value = "";
-    }
-    syncModeUi();
-    return;
-  }
-
   fileUploadInput?.click();
 });
 
 fileUploadInput?.addEventListener("change", async () => {
-  const file = fileUploadInput.files?.[0] || null;
-  if (!file) return;
+  const selectedFiles = Array.from(fileUploadInput.files || []);
+  if (!selectedFiles.length) return;
 
-  // --- 新增：发送文件到后端 ---
-  const formData = new FormData();
-  formData.append("file", file);
+  const existingIds = new Set(state.uploadedFiles.map((item) => item.id));
+  for (const file of selectedFiles) {
+    const formData = new FormData();
+    formData.append("file", file);
 
-  try {
-    const resp = await fetch("/api/upload", {
-      method: "POST",
-      body: formData,
-    });
+    try {
+      const resp = await fetch("/api/upload", {
+        method: "POST",
+        body: formData,
+      });
 
-    if (!resp.ok) throw new Error("上传失败");
+      if (!resp.ok) throw new Error("上传失败");
 
-    const result = await resp.json();
-    console.log("Upload response:", result);
+      const result = await resp.json();
+      const returnedName = typeof result?.file_name === "string" && result.file_name ? result.file_name : file.name;
+      const id = fileIdentity(file);
+      if (existingIds.has(id)) continue;
 
-    // 适配后端返回的 file_name 字段
-    if (result && result.file_name) {
-      state.uploadedFile = file;
-      state.uploadedFileName = result.file_name;
-      syncModeUi();
-      alert("上传成功！");
-    } else {
-      throw new Error("后端返回格式不正确");
+      state.uploadedFiles.push({ id, name: returnedName });
+      existingIds.add(id);
+    } catch (err) {
+      console.error("上传失败:", err);
     }
-  } catch (err) {
-    console.error("上传明细:", err);
-    alert("文件上传失败: " + err.message);
   }
+
+  if (fileUploadInput) {
+    fileUploadInput.value = "";
+  }
+
+  syncModeUi();
+});
+
+uploadStatus?.addEventListener("click", (e) => {
+  const target = e.target;
+  if (!(target instanceof HTMLElement)) return;
+
+  const removeBtn = target.closest(".upload-file-remove");
+  if (!removeBtn) return;
+
+  const fileId = removeBtn.getAttribute("data-file-id");
+  if (!fileId) return;
+
+  state.uploadedFiles = state.uploadedFiles.filter((item) => item.id !== fileId);
+  syncModeUi();
 });
 
 sqlAnalysisToggleBtn?.addEventListener("click", () => {
@@ -772,7 +798,7 @@ composerForm.addEventListener("submit", (e) => {
 
   const dynamicOptions = {
     sql_analysis: !!state.sqlAnalysisEnabled,
-    file_name: state.uploadedFileName || null
+    file_name: state.uploadedFiles.map((item) => item.name).join(",") || null
   };
 
   submitMessage(text, dynamicOptions);
