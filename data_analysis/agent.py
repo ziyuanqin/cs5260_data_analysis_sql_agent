@@ -32,7 +32,20 @@ from html_report import render_eda_html
 from langchain_openai import ChatOpenAI
 
 
+# Uncomment this line if make it compulsory for user to provide API key, by default the API key will be set in env variable
+# llm: ChatOpenAI | None = None
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+
+def init_llm(api_key: str) -> None:
+    """Initialise (or re-initialise) the LLM with the given OpenAI API key."""
+    global llm
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, openai_api_key=api_key)
+    log.info("[init_llm] LLM ready (gpt-4o-mini)")
+
+def _require_llm():
+    if llm is None:
+        raise RuntimeError("LLM not initialised. Call init_llm(api_key) first or POST /api-key.")
+
 _understander = DatasetUnderstanding()
 _inferencer   = TypeInferencer()
 _eda_runner   = AutomatedEDA()
@@ -166,6 +179,7 @@ def node_run_eda(state: AgentState) -> AgentState:
 
 
 def node_cleaning(state: AgentState) -> AgentState:
+    _require_llm()
     df_key = state.get("df_key")
     df     = _df_store.get(df_key) if df_key else None
     si     = state.get("schema_info")
@@ -236,12 +250,52 @@ def node_handle_human_decision(state: AgentState) -> AgentState:
             "messages": [AIMessage(content="Reply with: `retry` · `skip` · `reupload /path.csv` · `abort`")]}
 
 
+def _parse_save_path(msg: str, default: str) -> str:
+    """
+    Extract output path from messages like:
+      'save as my_data.csv'  →  'my_data.csv'
+      'save to /tmp/out.csv' →  '/tmp/out.csv'
+      'save dataset'         →  default
+    """
+    import re
+    m = re.search(r'(?:as|to)\s+(\S+\.csv)', msg, re.IGNORECASE)
+    return m.group(1) if m else default
+
+
+def _detect_special_intent(msg: str) -> str | None:
+    """
+    Keyword-based detection for rerun_eda and save_csv so we don't
+    burn an LLM call on these simple commands.
+    Returns a route label or None if no match.
+    """
+    lower = msg.strip().lower()
+    rerun_kw = {"rerun eda", "re-run eda", "refresh eda", "regenerate eda",
+                "rerun report", "refresh report", "update eda", "redo eda"}
+    save_kw  = {"save", "export", "download", "save dataset", "save csv",
+                "export csv", "save cleaned", "export cleaned"}
+    if any(lower.startswith(k) or lower == k for k in rerun_kw):
+        return "rerun_eda"
+    if any(lower.startswith(k) or lower == k for k in save_kw):
+        return "save_csv"
+    return None
+
+
 def node_chat_router(state: AgentState) -> AgentState:
+    _require_llm()
     last      = next((m.content for m in reversed(state["messages"]) if isinstance(m, HumanMessage)), "")
     df_key    = state.get("df_key")
     is_loaded = df_key is not None and df_key in _df_store
     has_eda   = state.get("eda_report") is not None
     log.info("[node_chat_router] msg='%s' is_loaded=%s has_eda=%s", last[:60], is_loaded, has_eda)
+
+    # Check keyword-based special intents first (no LLM call needed)
+    special = _detect_special_intent(last)
+    if special == "rerun_eda" and is_loaded:
+        log.info("[node_chat_router] Detected: rerun_eda")
+        return {**state, "step": "route_rerun_eda"}
+    if special == "save_csv" and is_loaded:
+        log.info("[node_chat_router] Detected: save_csv")
+        return {**state, "step": "route_save_csv"}
 
     resp  = llm.invoke([HumanMessage(content=(
         f'User said: "{last}"\nDataset loaded: {is_loaded}. EDA done: {has_eda}.\n'
@@ -261,19 +315,24 @@ def node_chat_router(state: AgentState) -> AgentState:
     # General chat — answer directly
     schema_ctx = str(state.get("schema_info", {}).get("dtypes_summary", {})) if state.get("schema_info") else "none"
     cl  = state.get("cleaning_log") or []
-    sys = SystemMessage(content=(
+    system_prompt = (
         "You are a data analysis assistant with memory of this conversation.\n"
         f"Dataset columns: {schema_ctx}\n"
         f"Cleaning ops applied: {cl}\n"
         "Answer concisely. If no dataset is loaded, guide the user to upload one."
-    ))
+    )
     history = [m for m in state["messages"] if not isinstance(m, SystemMessage)][-10:]
-    ans     = llm.invoke([sys] + history)
+    if history and isinstance(history[0], HumanMessage):
+        history = [HumanMessage(content=f"{system_prompt}\n\n{history[0].content}")] + history[1:]
+    else:
+        history = [HumanMessage(content=system_prompt)] + history
+    ans = llm.invoke(history)
     return {**state, "step": "chat_answered",
             "messages": [AIMessage(content=ans.content)]}
 
 
 def node_custom_eda(state: AgentState) -> AgentState:
+    _require_llm()
     df_key = state.get("df_key")
     df     = _df_store.get(df_key) if df_key else None
     si     = state.get("schema_info")
@@ -297,6 +356,65 @@ def node_custom_eda(state: AgentState) -> AgentState:
     return {**state, "custom_result": result, "step": "custom_complete",
             "awaiting_human": False,
             "messages": [AIMessage(content=reply)]}
+
+
+def node_rerun_eda(state: AgentState) -> AgentState:
+    """Re-run EDA on the current (possibly cleaned) DataFrame and refresh the HTML report."""
+    df_key = state.get("df_key")
+    df     = _df_store.get(df_key) if df_key else None
+    log.info("[node_rerun_eda] df_key=%s, loaded=%s", df_key, df is not None)
+    if df is None:
+        return {**state, "messages": [AIMessage(content="⚠️ No dataset loaded.")]}
+    try:
+        eda_report = _eda_runner.run(df)
+        eda_html   = render_eda_html(
+            eda_report,
+            state["schema_info"],
+            state["table_name"],
+            state.get("type_suggestions"),
+            state.get("cleaning_log"),
+        )
+        ov = eda_report["overview"]
+        log.info("[node_rerun_eda] Done — %d quality issues", eda_report["data_quality"]["issue_count"])
+        return {**state,
+                "eda_report":     _to_serializable(eda_report),
+                "eda_html":       eda_html,
+                "step":           "eda_complete",
+                "messages": [AIMessage(content=(
+                    f"✅ **EDA refreshed** on current dataset.\n"
+                    f"{ov['rows']:,} rows × {ov['columns']} cols | "
+                    f"{ov['total_missing']} missing | "
+                    f"{eda_report['data_quality']['issue_count']} quality issues | "
+                    f"{len(eda_report['correlations'].get('high_correlations', []))} high correlations"
+                ))]}
+    except Exception as e:
+        log.exception("[node_rerun_eda] Failed")
+        return {**state, "messages": [AIMessage(content=f"⚠️ EDA rerun failed: {e}")]}
+
+
+def node_save_csv(state: AgentState) -> AgentState:
+    """Save the current DataFrame to a CSV file."""
+    df_key = state.get("df_key")
+    df     = _df_store.get(df_key) if df_key else None
+    log.info("[node_save_csv] df_key=%s, loaded=%s", df_key, df is not None)
+    if df is None:
+        return {**state, "messages": [AIMessage(content="⚠️ No dataset loaded.")]}
+
+    # Parse optional output path from message: "save as output.csv" or "save dataset"
+    last     = next((m.content for m in reversed(state["messages"]) if isinstance(m, HumanMessage)), "")
+    out_path = _parse_save_path(last, default=f"{state.get('table_name', 'dataset')}_cleaned.csv")
+
+    try:
+        df.to_csv(out_path, index=False)
+        log.info("[node_save_csv] Saved %d rows to %s", len(df), out_path)
+        return {**state, "step": "save_complete",
+                "messages": [AIMessage(content=(
+                    f"✅ **Saved** cleaned dataset → `{out_path}`\n"
+                    f"{len(df):,} rows × {len(df.columns)} cols"
+                ))]}
+    except Exception as e:
+        log.error("[node_save_csv] Failed: %s", e)
+        return {**state, "messages": [AIMessage(content=f"⚠️ Save failed: {e}")]}
 
 
 # ══════════════════════════════════════════════════════════════
@@ -324,8 +442,10 @@ def route_after_human(s):
 
 def route_chat(s):
     step = s.get("step", "")
-    if step == "route_custom": return "custom_eda"
-    if step == "route_clean":  return "cleaning"
+    if step == "route_custom":    return "custom_eda"
+    if step == "route_clean":     return "cleaning"
+    if step == "route_rerun_eda": return "rerun_eda"
+    if step == "route_save_csv":  return "save_csv"
     return END
 
 
@@ -343,6 +463,8 @@ def _build_pipeline_graph(checkpointer):
         ("handle_human_decision", node_handle_human_decision),
         ("chat_router",           node_chat_router),
         ("custom_eda",            node_custom_eda),
+        ("rerun_eda",             node_rerun_eda),
+        ("save_csv",              node_save_csv),
     ]:
         g.add_node(name, fn)
 
@@ -362,9 +484,12 @@ def _build_pipeline_graph(checkpointer):
                              "run_eda":      "run_eda",
                              END: END})
     g.add_conditional_edges("chat_router", route_chat,
-                            {"custom_eda": "custom_eda", "cleaning": "cleaning", END: END})
+                            {"custom_eda": "custom_eda", "cleaning": "cleaning",
+                             "rerun_eda": "rerun_eda", "save_csv": "save_csv", END: END})
     g.add_edge("custom_eda", END)
     g.add_edge("cleaning",   END)
+    g.add_edge("rerun_eda",  END)
+    g.add_edge("save_csv",   END)
     return g.compile(checkpointer=checkpointer)
 
 
@@ -373,11 +498,16 @@ def _build_chat_graph(checkpointer):
     g.add_node("chat_router", node_chat_router)
     g.add_node("custom_eda",  node_custom_eda)
     g.add_node("cleaning",    node_cleaning)
+    g.add_node("rerun_eda",   node_rerun_eda)
+    g.add_node("save_csv",    node_save_csv)
     g.set_entry_point("chat_router")
     g.add_conditional_edges("chat_router", route_chat,
-                            {"custom_eda": "custom_eda", "cleaning": "cleaning", END: END})
+                            {"custom_eda": "custom_eda", "cleaning": "cleaning",
+                             "rerun_eda": "rerun_eda", "save_csv": "save_csv", END: END})
     g.add_edge("custom_eda", END)
     g.add_edge("cleaning",   END)
+    g.add_edge("rerun_eda",  END)
+    g.add_edge("save_csv",   END)
     return g.compile(checkpointer=checkpointer)
 
 
@@ -460,7 +590,8 @@ def run_chat(user_message: str, thread_id: str = "default") -> AgentState:
 
 if __name__ == "__main__":
     import sys
-    path = sys.argv[1] if len(sys.argv) > 1 else "sample.csv"
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    path = sys.argv[1] if len(sys.argv) > 1 else "Iris.csv"
     tid  = "cli-demo"
     print(f"\n▶ Running pipeline on: {path}\n")
     state = run_pipeline(path, thread_id=tid)
@@ -484,24 +615,40 @@ if __name__ == "__main__":
     #     print(f"\n✅ EDA HTML saved → {p.resolve()}")
     
     if state.get("df_key") is not None:
-        print("\n─"*50 + "\nChat mode. Try: 'drop duplicates' · 'histogram of Age' · 'exit'")
+        print("\n─"*50)
+        print("Chat mode. Commands:")
+        print("  Cleaning : 'drop column ID' · 'drop duplicates' · 'fill NaN in Age with mean'")
+        print("  Analysis : 'histogram of Age' · 'scatter PetalLength vs PetalWidth' ")
+        print("  EDA      : 'rerun eda'  — regenerates HTML report on current dataset")
+        print("  Save     : 'save' or 'save as output.csv'  — exports cleaned CSV")
+        print("  Exit     : 'exit'")
         while True:
             msg = input("\nYou: ").strip()
-            if msg.lower() in ("exit","quit"): break
+            if msg.lower() in ("exit", "quit"): break
             result = run_chat(msg, thread_id=tid)
-            # Only print the LAST AI message — history accumulates in state
-            # so printing all messages would reprint the entire conversation
+
+            # Only print the LAST AI message
             ai_msgs = [m for m in result.get("messages", []) if isinstance(m, AIMessage)]
             if ai_msgs:
                 print(f"Agent: {ai_msgs[-1].content}")
-            # After a cleaning op, show the current state of the dataset
-            if result.get("step") == "clean_complete":
+
+            step = result.get("step", "")
+
+            # After cleaning — show dataset preview
+            if step == "clean_complete":
                 df_key = result.get("df_key")
                 df = _df_store.get(df_key)
                 if df is not None:
                     print(f"\n📋 Dataset preview ({len(df)} rows × {len(df.columns)} cols):")
                     print(df.head().to_string())
                     print()
+
+            # After rerun EDA — save updated HTML report
+            if step == "eda_complete" and result.get("eda_html"):
+                p = Path(f"{result.get('table_name', 'dataset')}_eda_report.html")
+                p.write_text(result["eda_html"], encoding="utf-8")
+                print(f"📄 EDA report saved → {p.resolve()}")
+
             cr = result.get("custom_result", {})
             if cr and cr.get("plot_b64"):
                 img = Path(f"plot_{cr['type']}.png")
