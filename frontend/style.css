@@ -391,14 +391,163 @@ textarea {
   white-space: normal;
 }
 
+.msg.assistant .bubble.thinking {
+  display: inline-flex;
+  align-items: center;
+  min-height: 52px;
+  color: #4b5563;
+}
+
+.thinking-label {
+  font-weight: 500;
+}
+
 .bubble.rich p {
   margin: 0;
 }
 
+.bubble.rich h1,
+.bubble.rich h2,
+.bubble.rich h3,
+.bubble.rich h4,
+.bubble.rich h5,
+.bubble.rich h6 {
+  margin: 0;
+  line-height: 1.35;
+  color: #0f172a;
+}
+
+.bubble.rich h1 {
+  font-size: 1.24em;
+}
+
+.bubble.rich h2 {
+  font-size: 1.16em;
+}
+
+.bubble.rich h3,
+.bubble.rich h4,
+.bubble.rich h5,
+.bubble.rich h6 {
+  font-size: 1.05em;
+}
+
+.bubble.rich ul,
+.bubble.rich ol {
+  margin: 0;
+  padding-left: 1.4em;
+}
+
+.bubble.rich li + li {
+  margin-top: 4px;
+}
+
+.bubble.rich a {
+  color: #1d4ed8;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.bubble.rich code {
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 0.92em;
+  background: #f1f5f9;
+  border: 1px solid #dbe4ef;
+  border-radius: 6px;
+  padding: 1px 5px;
+}
+
+.bubble.rich mjx-container {
+  margin: 0 1px;
+}
+
+.bubble.rich mjx-container[display="true"] {
+  margin: 10px 0;
+  padding: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.bubble.rich blockquote {
+  margin: 0;
+  padding: 8px 12px;
+  border-left: 3px solid #cbd5e1;
+  background: #f8fafc;
+  color: #334155;
+  border-radius: 8px;
+}
+
+.bubble.rich hr {
+  border: 0;
+  border-top: 1px solid #e2e8f0;
+  margin: 4px 0;
+}
+
+.code-block {
+  border: 1px solid #d7deea;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #f8fafc;
+}
+
+.code-head {
+  height: 30px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  background: #eef2f7;
+  color: #475569;
+  font-size: 12px;
+  letter-spacing: 0.2px;
+  text-transform: lowercase;
+  border-bottom: 1px solid #dbe3ef;
+}
+
+.code-block pre {
+  margin: 0;
+  padding: 12px;
+  overflow-x: auto;
+  line-height: 1.55;
+}
+
+.code-block pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: #0f172a;
+  font-size: 13px;
+}
+
 .bubble.rich p + p,
+.bubble.rich p + h1,
+.bubble.rich p + h2,
+.bubble.rich p + h3,
+.bubble.rich p + h4,
+.bubble.rich p + h5,
+.bubble.rich p + h6,
+.bubble.rich h1 + p,
+.bubble.rich h2 + p,
+.bubble.rich h3 + p,
+.bubble.rich h4 + p,
+.bubble.rich h5 + p,
+.bubble.rich h6 + p,
+.bubble.rich p + ul,
+.bubble.rich p + ol,
+.bubble.rich ul + p,
+.bubble.rich ol + p,
+.bubble.rich blockquote + p,
+.bubble.rich p + blockquote,
+.bubble.rich .code-block + p,
+.bubble.rich p + .code-block,
+.bubble.rich .code-block + .table-wrap,
+.bubble.rich .table-wrap + .code-block,
 .bubble.rich p + .table-wrap,
 .bubble.rich .table-wrap + p,
-.bubble.rich .table-wrap + .table-wrap {
+.bubble.rich .table-wrap + .table-wrap,
+.bubble.rich hr + p,
+.bubble.rich p + hr,
+.bubble.rich hr + .code-block,
+.bubble.rich .code-block + hr {
   margin-top: 12px;
 }
 

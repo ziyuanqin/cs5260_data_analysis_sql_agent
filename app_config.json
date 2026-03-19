@@ -6,5 +6,5 @@
   "local_api_url": "http://127.0.0.1:9000/chat",
   "local_model_name": "local-default-model",
   "request_timeout": 100,
-  "history_max_messages": 20
+  "history_max_messages": 1
 }

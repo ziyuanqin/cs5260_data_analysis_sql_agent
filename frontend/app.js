@@ -26,6 +26,7 @@ let htmlPreviewDismissed = false;
 let lastHtmlPreviewContent = "";
 let currentHtmlPreviewSourceKey = "";
 let dismissedHtmlPreviewSourceKey = "";
+let mathTypesetTimer = null;
 
 const state = {
   // 所有会话（按最近更新时间排序显示在左侧历史栏）
@@ -151,13 +152,186 @@ function isTableSeparatorLine(line) {
   return /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(stripped);
 }
 
+function isFenceStartLine(line) {
+  return /^```/.test(line.trim());
+}
+
+function isHrLine(line) {
+  return /^\s{0,3}([-*_])\s*\1\s*\1([\s*_\-]*)$/.test(line);
+}
+
+function isHeadingLine(line) {
+  return /^\s{0,3}#{1,6}\s+/.test(line);
+}
+
+function isBlockquoteLine(line) {
+  return /^\s{0,3}>\s?/.test(line);
+}
+
+function isUnorderedListLine(line) {
+  return /^\s{0,3}[-*+]\s+/.test(line);
+}
+
+function isOrderedListLine(line) {
+  return /^\s{0,3}\d+\.\s+/.test(line);
+}
+
+function getFenceLanguage(line) {
+  const match = line.trim().match(/^```([a-zA-Z0-9_+-]*)/);
+  return (match?.[1] || "").trim().toLowerCase();
+}
+
+function normalizeMathDelimiters(text) {
+  if (typeof text !== "string" || text.length === 0) return "";
+
+  return text
+    .replaceAll("\\\\(", "\\(")
+    .replaceAll("\\\\)", "\\)")
+    .replaceAll("\\\\[", "\\[")
+    .replaceAll("\\\\]", "\\]");
+}
+
+function queueMathTypeset() {
+  if (!messageList) return;
+
+  const mathJax = window.MathJax;
+  if (!mathJax || typeof mathJax.typesetPromise !== "function") return;
+
+  if (mathTypesetTimer) {
+    clearTimeout(mathTypesetTimer);
+  }
+
+  mathTypesetTimer = setTimeout(() => {
+    mathJax.typesetPromise([messageList]).catch(() => {
+      // 忽略数学公式局部渲染失败，避免影响聊天流程。
+    });
+  }, 70);
+}
+
+function renderInlineMarkdown(text) {
+  if (typeof text !== "string" || text.length === 0) return "";
+
+  const codeTokens = [];
+  let html = escapeHtml(text);
+
+  // 先占位行内代码，避免被后续粗体/链接规则误处理。
+  html = html.replace(/`([^`\n]+)`/g, (_, codeText) => {
+    const token = `@@INLINE_CODE_${codeTokens.length}@@`;
+    codeTokens.push(`<code>${codeText}</code>`);
+    return token;
+  });
+
+  html = html.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
+  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+
+  for (let i = 0; i < codeTokens.length; i += 1) {
+    html = html.replace(`@@INLINE_CODE_${i}@@`, codeTokens[i]);
+  }
+
+  return html;
+}
+
+function isSpecialMarkdownBlockStart(lines, idx) {
+  const line = lines[idx] || "";
+  const nextLine = lines[idx + 1] || "";
+
+  if (!line.trim()) return true;
+  if (isFenceStartLine(line)) return true;
+  if (isHrLine(line)) return true;
+  if (isHeadingLine(line)) return true;
+  if (isBlockquoteLine(line)) return true;
+  if (isUnorderedListLine(line) || isOrderedListLine(line)) return true;
+
+  const headerCells = parseMarkdownTable(line);
+  if (headerCells && isTableSeparatorLine(nextLine)) return true;
+
+  return false;
+}
+
 function renderAssistantMessageHtml(text) {
-  // 把助手纯文本按“普通段落 + Markdown 表格”转换成 HTML。
-  const lines = text.split(/\r?\n/);
+  // 轻量 Markdown 渲染：支持代码块、标题、列表、引用、表格和基础行内格式。
+  const normalizedText = normalizeMathDelimiters(text);
+  const lines = normalizedText.split(/\r?\n/);
   const parts = [];
   let idx = 0;
 
   while (idx < lines.length) {
+    const line = lines[idx] || "";
+
+    if (!line.trim()) {
+      idx += 1;
+      continue;
+    }
+
+    if (isFenceStartLine(line)) {
+      const lang = getFenceLanguage(line) || "text";
+      const codeLines = [];
+      idx += 1;
+
+      while (idx < lines.length && !isFenceStartLine(lines[idx])) {
+        codeLines.push(lines[idx]);
+        idx += 1;
+      }
+
+      if (idx < lines.length && isFenceStartLine(lines[idx])) {
+        idx += 1;
+      }
+
+      parts.push(
+        `<div class="code-block"><div class="code-head">${escapeHtml(lang)}</div><pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre></div>`
+      );
+      continue;
+    }
+
+    if (isHrLine(line)) {
+      parts.push("<hr />");
+      idx += 1;
+      continue;
+    }
+
+    if (isHeadingLine(line)) {
+      const match = line.match(/^\s{0,3}(#{1,6})\s+(.+)$/);
+      if (match) {
+        const level = match[1].length;
+        const headingText = renderInlineMarkdown(match[2].trim());
+        parts.push(`<h${level}>${headingText}</h${level}>`);
+      }
+      idx += 1;
+      continue;
+    }
+
+    if (isBlockquoteLine(line)) {
+      const quoteLines = [];
+      while (idx < lines.length && isBlockquoteLine(lines[idx])) {
+        quoteLines.push(lines[idx].replace(/^\s{0,3}>\s?/, ""));
+        idx += 1;
+      }
+      const quoteHtml = quoteLines.map((item) => renderInlineMarkdown(item)).join("<br>");
+      parts.push(`<blockquote>${quoteHtml}</blockquote>`);
+      continue;
+    }
+
+    if (isUnorderedListLine(line)) {
+      const items = [];
+      while (idx < lines.length && isUnorderedListLine(lines[idx])) {
+        items.push(lines[idx].replace(/^\s{0,3}[-*+]\s+/, ""));
+        idx += 1;
+      }
+      parts.push(`<ul>${items.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ul>`);
+      continue;
+    }
+
+    if (isOrderedListLine(line)) {
+      const items = [];
+      while (idx < lines.length && isOrderedListLine(lines[idx])) {
+        items.push(lines[idx].replace(/^\s{0,3}\d+\.\s+/, ""));
+        idx += 1;
+      }
+      parts.push(`<ol>${items.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ol>`);
+      continue;
+    }
+
     const headerCells = parseMarkdownTable(lines[idx]);
     const separatorLine = lines[idx + 1] || "";
 
@@ -176,9 +350,9 @@ function renderAssistantMessageHtml(text) {
       const normalizedHeader = [...headerCells, ...Array(Math.max(0, maxCols - headerCells.length)).fill("")];
       const normalizedRows = rows.map((row) => [...row, ...Array(Math.max(0, maxCols - row.length)).fill("")]);
 
-      const headHtml = normalizedHeader.map((cell) => `<th>${escapeHtml(cell)}</th>`).join("");
+      const headHtml = normalizedHeader.map((cell) => `<th>${renderInlineMarkdown(cell)}</th>`).join("");
       const bodyHtml = normalizedRows
-        .map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`)
+        .map((row) => `<tr>${row.map((cell) => `<td>${renderInlineMarkdown(cell)}</td>`).join("")}</tr>`)
         .join("");
 
       parts.push(`<div class="table-wrap"><table><thead><tr>${headHtml}</tr></thead><tbody>${bodyHtml}</tbody></table></div>`);
@@ -187,20 +361,22 @@ function renderAssistantMessageHtml(text) {
 
     const textBuffer = [];
     while (idx < lines.length) {
-      const maybeHeader = parseMarkdownTable(lines[idx]);
-      const maybeSeparator = lines[idx + 1] || "";
-      if (maybeHeader && isTableSeparatorLine(maybeSeparator)) break;
+      if (isSpecialMarkdownBlockStart(lines, idx)) break;
       textBuffer.push(lines[idx]);
       idx += 1;
     }
 
     const paragraph = textBuffer.join("\n").trim();
     if (paragraph) {
-      parts.push(`<p>${escapeHtml(paragraph).replaceAll("\n", "<br>")}</p>`);
+      const paragraphHtml = paragraph
+        .split("\n")
+        .map((item) => renderInlineMarkdown(item))
+        .join("<br>");
+      parts.push(`<p>${paragraphHtml}</p>`);
     }
   }
 
-  return parts.join("") || `<p>${escapeHtml(text)}</p>`;
+  return parts.join("") || `<p>${escapeHtml(normalizedText)}</p>`;
 }
 
 // 自动根据内容调整输入框高度
@@ -530,7 +706,10 @@ function renderMessages() {
 
     const bubble = document.createElement("div");
     bubble.className = "bubble";
-    if (msg.role === "assistant") {
+    if (msg.role === "assistant" && msg.pending) {
+      bubble.classList.add("thinking");
+      bubble.innerHTML = '<span class="thinking-label">分析中 🔍</span>';
+    } else if (msg.role === "assistant") {
       bubble.classList.add("rich");
       bubble.innerHTML = renderAssistantMessageHtml(msg.text);
     } else {
@@ -543,6 +722,7 @@ function renderMessages() {
 
   messageList.scrollTop = messageList.scrollHeight;
   syncHtmlPreview(findLatestHtmlFromConversation(convo));
+  queueMathTypeset();
 }
 
 // 统一刷新
@@ -607,6 +787,7 @@ async function streamAssistantReply(conversationId, assistantMessage, userText, 
         // token 事件为增量文本，持续追加到当前助手消息。
         const delta = payload?.payload?.delta;
         if (typeof delta === "string" && delta.length > 0) {
+          assistantMessage.pending = false;
           assistantMessage.text += delta;
           const active = getActiveConversation();
           if (active && active.id === conversationId) {
@@ -620,6 +801,7 @@ async function streamAssistantReply(conversationId, assistantMessage, userText, 
         // final 事件是兜底完整文本，防止 token 丢失导致内容不完整。
         const finalText = payload?.payload?.text;
         if (typeof finalText === "string" && finalText.trim()) {
+          assistantMessage.pending = false;
           if (!assistantMessage.text.trim()) {
             assistantMessage.text = finalText;
           }
@@ -649,7 +831,7 @@ async function submitMessage(text, options = {}) {
   }
 
   convo.messages.push({ role: "user", text });
-  const assistantMessage = { role: "assistant", text: "" };
+  const assistantMessage = { role: "assistant", text: "", pending: true };
   convo.messages.push(assistantMessage);
   convo.updatedAt = Date.now();
 
@@ -668,6 +850,7 @@ async function submitMessage(text, options = {}) {
 
   try {
     await streamAssistantReply(convo.id, assistantMessage, text, options);
+    assistantMessage.pending = false;
     if (!assistantMessage.text.trim()) {
       assistantMessage.text = "模型未返回文本内容。";
     }
@@ -676,6 +859,7 @@ async function submitMessage(text, options = {}) {
     state.uploadedFiles = [];
     syncModeUi();
   } catch (err) {
+    assistantMessage.pending = false;
     assistantMessage.text = `请求失败：${err?.message || "未知错误"}`;
   } finally {
     convo.updatedAt = Date.now();
