@@ -11,6 +11,7 @@ from langgraph.graph.message import add_messages
 from langgraph.checkpoint.memory import MemorySaver
 from sqlalchemy import create_engine, inspect
 from dotenv import load_dotenv
+from backend.SQLagent.registry import DOMAIN_REGISTRY
 
 load_dotenv()
 
@@ -35,33 +36,7 @@ class SQLExpert:
         self.llm = ChatOpenAI(model="deepseek-chat", temperature=0)
 
         # 5大核心领域指标知识库
-        self.domain_registry = {
-            "retail": {
-                "keywords": ["sales", "order", "product", "inventory", "customer"],
-                "metrics": "电商/零售领域指标：\n- RFM模型: R(最近消费), F(频率), M(总额)。\n- 连带率: count(distinct product_id) / count(distinct order_id)。",
-                "sql_tips": "使用 SQLite 计算复购：`SELECT user_id FROM t GROUP BY user_id HAVING COUNT(order_id) > 1`。"
-            },
-            "finance": {
-                "keywords": ["loan", "balance", "interest", "credit", "transaction"],
-                "metrics": "金融风控指标：\n- 逾期率: 逾期金额 / 总待还金额。\n- ROI: (收益 - 成本) / 成本。",
-                "sql_tips": "风控分析常需处理空值：使用 `COALESCE(amount, 0)` 防止计算出错。"
-            },
-            "product": {
-                "keywords": ["user_id", "active", "session", "click", "login"],
-                "metrics": "互联网运营指标：\n- 次日留存率: 第N天登录人数 / 第一天新增人数。\n- DAU/MAU 活跃比率。",
-                "sql_tips": "留存分析模板：`LEFT JOIN` 同一张表并判断 `date_diff = 1`。"
-            },
-            "manufacturing": {
-                "keywords": ["sensor", "machine", "output", "failure", "efficiency"],
-                "metrics": "制造/供应链指标：\n- OEE(设备综合效率): 可用率 × 表现指数 × 质量指数。\n- 库存周转率。",
-                "sql_tips": "时序数据处理：使用 `LAG()` 比较当前批次与上一批次的良率。"
-            },
-            "healthcare": {
-                "keywords": ["patient", "drug", "diagnosis", "treatment", "test_result"],
-                "metrics": "医疗健康指标：\n- 治愈率: 治愈人数 / 确诊人数。\n- 相关性: P-value 显著性检验。",
-                "sql_tips": "患者隐私保护：查询时避免暴露敏感字段名，必要时进行脱敏处理。"
-            }
-        }
+        self.domain_registry = DOMAIN_REGISTRY
 
     async def data_ingestion(self, state: AgentState, engine):
         """异步入库逻辑"""
@@ -115,33 +90,34 @@ class SQLExpert:
             return {"error": f"Schema 探测失败: {str(e)}"}
 
     def _get_relevant_knowledge(self, text: str, schema: str) -> str:
-        combined_text = text.lower() # 只匹配问题
+        combined_text = text.lower()
         selected_knowledge = []
         for domain, info in self.domain_registry.items():
-            if any(kw in combined_text for kw in info["keywords"]):
-                # 这里注入时，确保把内容里的 % 预先转义为 %%
+            # 改进：不仅匹配 keywords，也匹配领域名本身
+            if any(kw in combined_text for kw in info["keywords"]) or domain in combined_text:
                 safe_metrics = info['metrics'].replace("%", "%%")
                 safe_tips = info['sql_tips'].replace("%", "%%")
-                # 使用 + 号拼接，绝对安全
-                selected_knowledge.append("---【" + domain + "领域建议】---\n" + safe_metrics + "\n" + safe_tips)
-        return "\n".join(selected_knowledge) if selected_knowledge else "请基于通用统计逻辑进行分析。"
+                # 结构化输出，方便 LLM 区分
+                selected_knowledge.append(f"### 【{domain.upper()}领域规范】\n业务指标:\n{safe_metrics}\nSQL建议:\n{safe_tips}")
+
+        return "\n\n".join(selected_knowledge) if selected_knowledge else "请基于通用统计逻辑进行分析。"
 
     async def generate_sql(self, state: AgentState):
 
         # 1. 准备基础数据
-        schema = str(state.get('schema_info', "未知架构"))
+        schema = str(state.get('schema_info', "Unknown schema"))
         current_question = state["messages"][-1].content if state.get("messages") else ""
         domain_hint = str(self._get_relevant_knowledge(current_question, schema))
         last_error = state.get('error')
 
         # 2. 格式化错误信息 - 核心修复：严禁使用 f-string
         if last_error:
-            # 使用字符串拼接，绝对安全
-            error_feedback = "⚠️ 注意：上一次生成的 SQL 报错：" + str(last_error) + "。请核对 Schema 修正。"
+            # High-priority feedback to guide the LLM's self-correction
+            error_feedback = f"⚠️ WARNING: The previous SQL execution failed with error: {str(last_error)}. Please cross-reference the Schema and fix the syntax."
         else:
-            error_feedback = "状态正常。"
+            error_feedback = "System status: Healthy."
 
-        dialect_prompt = "使用 MySQL 语法" if state.get('db_type') == 'mysql' else "使用 SQLite 语法"
+        dialect_prompt = "Standard MySQL syntax" if state.get('db_type') == 'mysql' else "SQLite-compatible syntax"
 
         # 3. 格式化对话历史
         history_list = []
@@ -150,31 +126,36 @@ class SQLExpert:
                 role = "User" if isinstance(m, HumanMessage) else "Assistant"
                 # 历史记录也可能包含带 % 的 SQL，必须安全处理
                 history_list.append(role + ": " + str(m.content))
-        history_context = "\n".join(history_list) if history_list else "这是首轮对话。"
+        history_context = "\n".join(history_list) if history_list else "Initial turn of conversation."
 
         # 4. 使用 Template 渲染
-        template_str = """你是一个专业的数据分析师。请根据以下上下文生成 SQL 语句。
+        template_str = """You are an expert Data Engineer and Senior SQL Developer. Your goal is to translate natural language questions into high-performance, syntactically correct SQL queries based on the provided context.
         
-        [数据库环境]: $dialect
-        [Schema 信息]:
-        $schema
+        - [Database Dialect]: $dialect
         
-        [对话历史记录]:
-        $history
+        - [Database Schema]: $schema
         
-        [领域知识注入]:
-        $domain
+        - [Conversation History]: $history
         
-        [反馈/错误修复]:
-        $error_msg
+        - [Domain-Specific Knowledge]: $domain
+        (Note: Use the Domain Business Logic for calculation methods, but STRICTLY map them to the real column names provided in the [Database Schema].)
         
-        [当前用户需求]: $question
+        - [ERROR/FEEDBACK CORRECTION]: $error_msg
         
-        要求：
-        1. 直接返回 SQL，严禁包含任何 Markdown 格式（如 ```sql）。
-        2. 严禁猜测字段，必须使用 [Schema 信息] 中存在的列。
-        3. 聚合字段必须使用英文别名。
-        4. 如果用户没有指明在SQL里面使用like，则不要使用。
+        - [USER QUESTION]: $question
+        
+        1. OUTPUT FORMAT: Return ONLY the raw SQL string. Do not include Markdown blocks (```sql), explanations, or any conversational filler.
+        2. SCHEMA FIDELITY: Do not hallucinate columns. Use ONLY the columns listed in the [Database Schema]. If a required column is missing, use the most logical substitute or return a comment indicating the missing field.
+        3. ALIASING: Always provide clear, English aliases for aggregated or calculated columns (e.g., `SUM(sales) AS total_revenue`).
+        4. STRING MATCHING: Do not use the `LIKE` operator unless the user explicitly requests partial matching. Favor exact equality `=` for performance.
+        5. NULL HANDLING: Use `COALESCE()` or `IFNULL()` for any arithmetic operations to prevent NULL propagation in results.
+        6. JOIN LOGIC: Prefer explicit `JOIN` syntax over implicit comma-separated joins. Always specify the join key.
+        
+        - PREDICATE PUSHdown: Place filtering conditions in the `WHERE` clause rather than `HAVING` whenever possible to reduce the dataset before grouping.
+        - SELECT SPECIFICITY: Avoid `SELECT *`. Explicitly name only the columns required by the user's question.
+        - AGGREGATION EFFICIENCY: For "Top N" queries, use `DENSE_RANK()` or `ROW_NUMBER()` over a `LIMIT` if the business logic requires handling ties.
+        - TYPE CONSISTENCY: Ensure comparisons match data types (e.g., do not compare a string to an integer without explicit casting if required by the $dialect).
+        
         """
 
         t = Template(template_str)
@@ -183,7 +164,7 @@ class SQLExpert:
             schema=schema,
             history=history_context,
             domain=domain_hint,
-            error_msg=error_feedback, # 传入预先拼接好的纯字符串
+            error_msg=error_feedback,
             question=current_question
         )
 
@@ -195,10 +176,10 @@ class SQLExpert:
     async def execute_sql(self, state: AgentState, engine):
         """异步执行 SQL"""
         sql = state.get('sql_query')
-        if not sql: return {"error": "未生成 SQL"}
+        if not sql: return {"error": "SQL generation failed."}
 
         if any(kw in sql.upper() for kw in ["DROP", "DELETE", "UPDATE"]):
-            return {"error": "只允许执行 SELECT 语句。"}
+            return {"error": "Security Policy: Only SELECT statements are permitted."}
 
         # 定义同步执行块
         def _run_query():
@@ -213,26 +194,48 @@ class SQLExpert:
             return {"error": str(e).replace("%", "%%"), "retry_count": state.get('retry_count', 0) + 1}
 
     def analyze_result(self, state: AgentState):
-        """生成带商业洞察的最终回复（安全拼接版）"""
-        current_question = state["messages"][-1].content if state.get("messages") else "未知问题"
 
-        # 处理失败情况
+        current_question = state["messages"][-1].content if state.get("messages") else "Unknown problem"
+
         if state.get('error') and state.get('retry_count', 0) >= 3:
-            # 使用 + 拼接，绝对不会解析内部的 % 或 '
-            fail_msg = "抱歉，经过多次重试仍无法成功查询。错误原因：" + str(state['error']) + "。"
+
+            fail_msg = "System reached maximum retries without a successful query. Reason:" + str(state['error']) + "。"
             return {"analysis": fail_msg, "messages": [AIMessage(content=fail_msg)], "retry_count": 0}
 
         # 处理成功情况
 
         # 使用 Template 保护分析阶段的 Prompt
-        analysis_template = Template("""
-        你是一个商业分析师。请基于以下查询结果回答用户问题：
-        [当前问题]: $question
-        [查询结果]: $result
+        analysis_template = Template(r"""
+        ### ROLE
+        You are a Senior Strategic Business Consultant and Data Storyteller. Your goal is to transform raw query results into high-impact executive insights.
         
-        要求：
-        1. 使用 LaTeX 渲染公式。
-        2. 提供 3 条针对性的商业建议。
+        ### CONTEXT
+        - [User's Strategic Question]: $question
+        - [Retrieved Data Result]: 
+        $result
+        
+        ### ANALYSIS GUIDELINES
+        1. **Mathematical Precision**: 
+           - Use LaTeX for all mathematical notations, growth formulas, and statistical summaries (e.g., $$Growth = \frac{V_{current} - V_{past}}{V_{past}}$$).
+           - Clearly state the $n$ (sample size) or totals if available in the result.
+        
+        2. **Data Interpretation**:
+           - **Contextualize the numbers**: Don't just list values. Identify trends (e.g., "A $15\%$ MoM increase"), anomalies, or significant concentrations (e.g., "Top 3 SKUs contribute $80\%$ of revenue").
+           - **Root Cause Hypothesis**: Briefly suggest a "why" behind the data based on industry benchmarks.
+        
+        3. **Executive Summary**:
+           - Provide a 1-sentence "Bottom Line Up Front" (BLUF) that answers the core question.
+        
+        ### STRATEGIC RECOMMENDATIONS (3 Pillars)
+        Provide exactly three (3) highly targeted, non-generic business recommendations. Each must follow this structure:
+        - **Observation**: What does the data say?
+        - **Action**: What specific step should the business take?
+        - **Expected Impact**: What is the projected ROI or strategic benefit?
+        
+        ### CONSTRAINTS
+        - Avoid corporate jargon; be concise and direct.
+        - If the [Retrieved Data Result] is empty or insufficient, state exactly what additional data is needed to provide a valid answer.
+        - Do not hallucinate external facts not present in the data.
         """)
 
         safe_prompt = analysis_template.safe_substitute(
