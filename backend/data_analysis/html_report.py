@@ -1,5 +1,5 @@
 import pandas as pd
-from shared import BG, CARD, ACCENT, WARN, DANGER, SUCCESS, TEXT, MUTED
+from backend.data_analysis.shared import BG, CARD, ACCENT, WARN, DANGER, SUCCESS, TEXT, MUTED
 
 
 def render_eda_html(

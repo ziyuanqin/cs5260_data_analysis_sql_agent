@@ -18,7 +18,8 @@ from app.services.providers.registry import ProviderRegistry
 
 from langchain_core.messages import HumanMessage
 from backend.SQLagent.main import get_sql_graph_app
-
+import backend.data_analysis.agent as agent
+from app.api.eda import _last_ai_message
 
 class ChatService:
     """供路由层复用的聊天服务对象。"""
@@ -89,42 +90,31 @@ class ChatService:
         with self._lock:
             return self._sessions.pop(session_id, None) is not None
 
-    def _eda_chat(self, session_id: str, user_message: str) -> str:
-        """调用 EDA 后端 /chat，并返回文本回复。"""
+    def _eda_chat(self, session_id: str, user_message: str, file_names: list = None) -> str:
 
-        endpoint = f"{self.config.eda_api_base_url.rstrip('/')}/chat"
-        payload = {
-            "thread_id": session_id,
-            "message": user_message,
-        }
-
-        req = urlrequest.Request(
-            endpoint,
-            data=json.dumps(payload).encode("utf-8"),
-            method="POST",
-            headers={"Content-Type": "application/json"},
-        )
-
-        with urlrequest.urlopen(req, timeout=self.config.request_timeout) as resp:
-            raw = resp.read().decode("utf-8", errors="ignore")
+        # 1. 确保核心 LLM 已根据 .env 自动初始化
+        if agent.llm is None:
+            agent.init_llm()
 
         try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            return raw.strip() or "EDA 分析完成。"
+            # 2. 直接在当前进程驱动 Agent 运行对话
+            # 注意：Agent 会根据 session_id (thread_id) 自动找回之前上传的表格
+            state = agent.run_chat(user_message, thread_id=session_id)
 
-        if not isinstance(parsed, dict):
-            return raw.strip() or "EDA 分析完成。"
+            # 3. 提取最新的 AI 回复文本
+            text = _last_ai_message(state)
 
-        text = parsed.get("message")
-        if isinstance(text, str) and text.strip():
-            return text
+            if text and text.strip():
+                return text
 
-        detail = parsed.get("detail")
-        if isinstance(detail, str) and detail.strip():
-            return detail
+            return "EDA 分析完成，请查看报告或继续提问。"
 
-        return raw.strip() or "EDA 分析完成。"
+        except Exception as e:
+            # 记录详细日志方便排查本地逻辑错误
+            print(f"❌ EDA 本地对话调用失败: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return f"抱歉，数据分析模块暂时无法响应: {str(e)}"
 
     async def stream_chat_events(
             self,
@@ -147,8 +137,9 @@ class ChatService:
         # --- 情况 A: 运行 EDA Agent ---
         if is_eda_mode:
             self._append_session_message(session_id, "user", user_message)
+            raw_file_names = opts.get("file_name", "")
             try:
-                eda_text = await asyncio.to_thread(self._eda_chat, session_id, user_message)
+                eda_text = await asyncio.to_thread(self._eda_chat, session_id, user_message, raw_file_names)
                 self._append_session_message(session_id, "assistant", eda_text)
                 yield {
                     "event": "token",

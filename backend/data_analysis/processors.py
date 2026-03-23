@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from langchain_core.messages import HumanMessage
 
-from shared import (
+from backend.data_analysis.shared import (
     log,
     BG, CARD, ACCENT, WARN, DANGER, SUCCESS, TEXT, MUTED,
     _fig_to_b64, _dark_fig, _dark_fig_multi,

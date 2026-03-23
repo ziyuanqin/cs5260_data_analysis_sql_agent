@@ -19,28 +19,31 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
-from state import AgentState
-from shared import log, _df_store, _to_serializable
-from processors import (
+from backend.data_analysis.state import AgentState
+from backend.data_analysis.shared import log, _df_store, _to_serializable
+from backend.data_analysis.processors import (
     DatasetUnderstanding,
     TypeInferencer,
     AutomatedEDA,
     DataCleaningEngine,
     CustomEDAEngine,
 )
-from html_report import render_eda_html
+from backend.data_analysis.html_report import render_eda_html
 from langchain_openai import ChatOpenAI
-
+from dotenv import load_dotenv
+load_dotenv()
 
 # Uncomment this line if make it compulsory for user to provide API key, by default the API key will be set in env variable
 # llm: ChatOpenAI | None = None
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+llm = ChatOpenAI(model="deepseek-chat", temperature=0)
 
 def init_llm(api_key: str) -> None:
     """Initialise (or re-initialise) the LLM with the given OpenAI API key."""
     global llm
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, openai_api_key=api_key)
-    log.info("[init_llm] LLM ready (gpt-4o-mini)")
+    #加
+    api_key = os.getenv("OPENAI_API_KEY")
+    llm = ChatOpenAI(model="deepseek-chat", temperature=0, openai_api_key=api_key)
+    log.info("[init_llm] LLM ready (deepseek-chat)")
 
 def _require_llm():
     if llm is None:
@@ -590,7 +593,7 @@ def run_chat(user_message: str, thread_id: str = "default") -> AgentState:
 
 if __name__ == "__main__":
     import sys
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatOpenAI(model="deepseek-chat", temperature=0)
     path = sys.argv[1] if len(sys.argv) > 1 else "Iris.csv"
     tid  = "cli-demo"
     print(f"\n▶ Running pipeline on: {path}\n")
