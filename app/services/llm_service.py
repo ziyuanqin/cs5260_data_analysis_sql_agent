@@ -6,10 +6,12 @@
 - 把模型分片结果转换为前端可消费事件
 """
 import os
+import json
 import asyncio
 from typing import AsyncGenerator
 from threading import Lock
 from typing import Any
+from urllib import request as urlrequest
 
 from app.config import AppConfig
 from app.services.providers.registry import ProviderRegistry
@@ -87,6 +89,43 @@ class ChatService:
         with self._lock:
             return self._sessions.pop(session_id, None) is not None
 
+    def _eda_chat(self, session_id: str, user_message: str) -> str:
+        """调用 EDA 后端 /chat，并返回文本回复。"""
+
+        endpoint = f"{self.config.eda_api_base_url.rstrip('/')}/chat"
+        payload = {
+            "thread_id": session_id,
+            "message": user_message,
+        }
+
+        req = urlrequest.Request(
+            endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+
+        with urlrequest.urlopen(req, timeout=self.config.request_timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="ignore")
+
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return raw.strip() or "EDA 分析完成。"
+
+        if not isinstance(parsed, dict):
+            return raw.strip() or "EDA 分析完成。"
+
+        text = parsed.get("message")
+        if isinstance(text, str) and text.strip():
+            return text
+
+        detail = parsed.get("detail")
+        if isinstance(detail, str) and detail.strip():
+            return detail
+
+        return raw.strip() or "EDA 分析完成。"
+
     async def stream_chat_events(
             self,
             session_id: str,
@@ -102,9 +141,31 @@ class ChatService:
         """
 
         opts = provider_options or {}
+        is_eda_mode = opts.get("eda_analysis", False)
         is_sql_mode = opts.get("sql_analysis", False)
 
-        # --- 情况 A: 运行 SQL 专家 Agent ---
+        # --- 情况 A: 运行 EDA Agent ---
+        if is_eda_mode:
+            self._append_session_message(session_id, "user", user_message)
+            try:
+                eda_text = await asyncio.to_thread(self._eda_chat, session_id, user_message)
+                self._append_session_message(session_id, "assistant", eda_text)
+                yield {
+                    "event": "token",
+                    "payload": {"delta": eda_text},
+                }
+                yield {
+                    "event": "final",
+                    "payload": {"text": eda_text},
+                }
+            except Exception as exc:
+                yield {
+                    "event": "error",
+                    "payload": {"message": f"EDA 调用失败：{str(exc)}"},
+                }
+            return
+
+        # --- 情况 B: 运行 SQL 专家 Agent ---
         if is_sql_mode:
             self._append_session_message(session_id, "user", user_message)
             raw_file_names = opts.get("file_name", "")

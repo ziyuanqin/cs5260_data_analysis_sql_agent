@@ -16,8 +16,11 @@ const taskChipBtn = document.getElementById("taskChipBtn");
 const fileUploadBtn = document.getElementById("fileUploadBtn");
 const fileUploadInput = document.getElementById("fileUploadInput");
 const uploadStatus = document.getElementById("uploadStatus");
+const edaAnalysisToggleBtn = document.getElementById("edaAnalysisToggleBtn");
 const sqlAnalysisToggleBtn = document.getElementById("sqlAnalysisToggleBtn");
 const modelSwitch = document.querySelector(".model-switch");
+
+const GENERAL_MODELS = ["deepseek", "openai"];
 
 // 可选后端配置：可在浏览器控制台设置 window.__CHAT_BACKEND_CONFIG__ 动态切换。
 // 例如：window.__CHAT_BACKEND_CONFIG__ = { provider: "local_http", model: "qwen2.5:7b" }
@@ -39,9 +42,98 @@ const state = {
   isStreaming: false,
   // UI 模式：点击专家模式按钮后切换欢迎语。
   chatMode: "general",
+  generalModel: "deepseek",
   uploadedFiles: [],
+  edaAnalysisEnabled: false,
   sqlAnalysisEnabled: false,
 };
+
+let modelMenuEl = null;
+
+function getGeneralModelText() {
+  const selected = GENERAL_MODELS.includes(state.generalModel) ? state.generalModel : "deepseek";
+  return `通用模式:${selected}`;
+}
+
+function closeModelMenu() {
+  if (!modelMenuEl) return;
+  modelMenuEl.hidden = true;
+  if (modelSwitch) {
+    modelSwitch.setAttribute("aria-expanded", "false");
+  }
+}
+
+function openModelMenu() {
+  if (!modelMenuEl || !modelSwitch) return;
+
+  const rect = modelSwitch.getBoundingClientRect();
+  modelMenuEl.style.left = `${rect.left}px`;
+  modelMenuEl.style.top = `${rect.bottom + 8}px`;
+  modelMenuEl.hidden = false;
+  modelSwitch.setAttribute("aria-expanded", "true");
+}
+
+function syncModelMenuSelection() {
+  if (!modelMenuEl) return;
+
+  const items = modelMenuEl.querySelectorAll("[data-model-id]");
+  for (const item of items) {
+    const modelId = item.getAttribute("data-model-id") || "";
+    const selected = modelId === state.generalModel;
+    item.classList.toggle("active", selected);
+    item.setAttribute("aria-checked", String(selected));
+  }
+}
+
+function ensureModelMenu() {
+  if (modelMenuEl || !modelSwitch) return;
+
+  const menu = document.createElement("div");
+  menu.className = "model-menu";
+  menu.hidden = true;
+  menu.setAttribute("role", "menu");
+  menu.setAttribute("aria-label", "通用模式模型选择");
+
+  for (const modelId of GENERAL_MODELS) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "model-menu-item";
+    item.setAttribute("role", "menuitemradio");
+    item.setAttribute("data-model-id", modelId);
+    item.textContent = modelId;
+    item.addEventListener("click", () => {
+      state.generalModel = modelId;
+      syncModeUi();
+      persistState();
+      closeModelMenu();
+    });
+    menu.appendChild(item);
+  }
+
+  document.body.appendChild(menu);
+  modelMenuEl = menu;
+
+  document.addEventListener("click", (e) => {
+    if (!modelMenuEl || modelMenuEl.hidden) return;
+    const target = e.target;
+    if (!(target instanceof Node)) return;
+    if (modelMenuEl.contains(target) || modelSwitch.contains(target)) return;
+    closeModelMenu();
+  });
+
+  window.addEventListener("resize", () => {
+    if (!modelMenuEl || modelMenuEl.hidden) return;
+    closeModelMenu();
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      closeModelMenu();
+    }
+  });
+
+  syncModelMenuSelection();
+}
 
 function fileIdentity(file) {
   return `${file.name}__${file.size}__${file.lastModified}`;
@@ -72,8 +164,13 @@ function getModeGreetingText() {
 function syncModeUi() {
   const isExpert = state.chatMode === "expert";
 
+  if (isExpert) {
+    closeModelMenu();
+  }
+
   if (modelSwitch) {
-    modelSwitch.textContent = isExpert ? "专家模式▾" : "通用模式▾";
+    modelSwitch.textContent = isExpert ? "专家模式▾" : `${getGeneralModelText()}▾`;
+    modelSwitch.setAttribute("aria-expanded", String(Boolean(modelMenuEl && !modelMenuEl.hidden)));
   }
 
   if (emptyTitle) {
@@ -100,6 +197,14 @@ function syncModeUi() {
     sqlAnalysisToggleBtn.setAttribute("aria-pressed", String(state.sqlAnalysisEnabled));
     sqlAnalysisToggleBtn.title = state.sqlAnalysisEnabled ? "点击关闭SQL分析" : "点击开启SQL分析";
   }
+
+  if (edaAnalysisToggleBtn) {
+    edaAnalysisToggleBtn.classList.toggle("active", state.edaAnalysisEnabled);
+    edaAnalysisToggleBtn.setAttribute("aria-pressed", String(state.edaAnalysisEnabled));
+    edaAnalysisToggleBtn.title = state.edaAnalysisEnabled ? "点击关闭EDA分析" : "点击开启EDA分析";
+  }
+
+  syncModelMenuSelection();
 }
 
 function createId() {
@@ -116,9 +221,38 @@ function normalizeMessages(rawMessages) {
     .map((msg) => ({
       role: msg?.role === "user" ? "user" : "assistant",
       text: typeof msg?.text === "string" ? msg.text : "",
+      edaReportThreadId: typeof msg?.edaReportThreadId === "string" ? msg.edaReportThreadId : null,
+      edaMessageSource: msg?.edaMessageSource === "upload" || msg?.edaMessageSource === "chat" ? msg.edaMessageSource : null,
     }))
     .filter((msg) => msg.text.trim().length > 0)
     .filter((msg) => !(msg.role === "assistant" && isLegacyWelcomeText(msg.text)));
+}
+
+async function previewEdaReport(threadId) {
+  if (typeof threadId !== "string" || !threadId.trim()) return;
+
+  const safeId = encodeURIComponent(threadId.trim());
+  const resp = await fetch(`/api/eda/report/${safeId}`);
+  if (!resp.ok) {
+    throw new Error(`报告获取失败：HTTP ${resp.status}`);
+  }
+
+  const html = await resp.text();
+  htmlPreviewDismissed = false;
+  dismissedHtmlPreviewSourceKey = "";
+  syncHtmlPreview({ html, sourceKey: `eda-report:${threadId}` });
+}
+
+function downloadEdaReport(threadId) {
+  if (typeof threadId !== "string" || !threadId.trim()) return;
+  const safeId = encodeURIComponent(threadId.trim());
+  window.open(`/api/eda/report/${safeId}?download=true`, "_blank", "noopener");
+}
+
+function downloadEdaCsv(threadId) {
+  if (typeof threadId !== "string" || !threadId.trim()) return;
+  const safeId = encodeURIComponent(threadId.trim());
+  window.open(`/api/eda/download-csv/${safeId}`, "_blank", "noopener");
 }
 
 function isLegacyWelcomeText(text) {
@@ -551,6 +685,8 @@ function persistState() {
       activeConversationId: state.activeConversationId,
       chatCounter: state.chatCounter,
       chatMode: state.chatMode,
+      generalModel: state.generalModel,
+      edaAnalysisEnabled: state.edaAnalysisEnabled,
       sqlAnalysisEnabled: state.sqlAnalysisEnabled,
     })
   );
@@ -589,6 +725,8 @@ function restoreState() {
       normalizedConversations[0].id;
     state.chatCounter = Number(parsed.chatCounter || normalizedConversations.length + 1);
     state.chatMode = parsed.chatMode === "expert" ? "expert" : "general";
+    state.generalModel = GENERAL_MODELS.includes(parsed.generalModel) ? parsed.generalModel : "deepseek";
+    state.edaAnalysisEnabled = Boolean(parsed.edaAnalysisEnabled);
     state.sqlAnalysisEnabled = Boolean(parsed.sqlAnalysisEnabled);
 
     if (!Number.isFinite(state.chatCounter) || state.chatCounter < 1) {
@@ -708,7 +846,8 @@ function renderMessages() {
     bubble.className = "bubble";
     if (msg.role === "assistant" && msg.pending) {
       bubble.classList.add("thinking");
-      bubble.innerHTML = '<span class="thinking-label">分析中 🔍</span>';
+      const pendingLabel = typeof msg.pendingLabel === "string" && msg.pendingLabel.trim() ? msg.pendingLabel.trim() : "分析中 🔍";
+      bubble.innerHTML = `<span class="thinking-label">${escapeHtml(pendingLabel)}</span>`;
     } else if (msg.role === "assistant") {
       bubble.classList.add("rich");
       bubble.innerHTML = renderAssistantMessageHtml(msg.text);
@@ -717,6 +856,56 @@ function renderMessages() {
     }
 
     article.appendChild(bubble);
+
+    if (msg.role === "assistant" && !msg.pending && typeof msg.edaReportThreadId === "string" && msg.edaReportThreadId.trim()) {
+      const actions = document.createElement("div");
+      actions.className = "eda-report-actions";
+      const hasSuccessMark = typeof msg.text === "string" && msg.text.includes("✅");
+      const source = msg.edaMessageSource;
+      const isUploadMessage = source === "upload";
+      const isChatMessage = source === "chat";
+
+      if (isUploadMessage) {
+        const previewBtn = document.createElement("button");
+        previewBtn.className = "eda-report-btn";
+        previewBtn.type = "button";
+        previewBtn.textContent = "预览EDA报告";
+        previewBtn.addEventListener("click", async () => {
+          try {
+            await previewEdaReport(msg.edaReportThreadId);
+          } catch (err) {
+            appendAssistantSystemMessage(`EDA报告预览失败：${err?.message || "未知错误"}`);
+          }
+        });
+
+        const downloadBtn = document.createElement("button");
+        downloadBtn.className = "eda-report-btn";
+        downloadBtn.type = "button";
+        downloadBtn.textContent = "下载EDA报告";
+        downloadBtn.addEventListener("click", () => {
+          downloadEdaReport(msg.edaReportThreadId);
+        });
+
+        actions.appendChild(previewBtn);
+        actions.appendChild(downloadBtn);
+      }
+
+      if (isChatMessage && hasSuccessMark) {
+        const downloadCsvBtn = document.createElement("button");
+        downloadCsvBtn.className = "eda-report-btn";
+        downloadCsvBtn.type = "button";
+        downloadCsvBtn.textContent = "下载CSV";
+        downloadCsvBtn.addEventListener("click", () => {
+          downloadEdaCsv(msg.edaReportThreadId);
+        });
+        actions.appendChild(downloadCsvBtn);
+      }
+
+      if (actions.childElementCount > 0) {
+        article.appendChild(actions);
+      }
+    }
+
     messageList.appendChild(article);
   }
 
@@ -731,6 +920,28 @@ function renderAll() {
   renderMessages();
   syncMainLayout();
   syncModeUi();
+}
+
+function appendAssistantSystemMessage(text, meta = {}) {
+  if (typeof text !== "string" || !text.trim()) return;
+
+  const convo = getActiveConversation();
+  if (!convo) return;
+
+  if (!Array.isArray(convo.messages)) {
+    convo.messages = [];
+  }
+
+  convo.messages.push({
+    role: "assistant",
+    text: text.trim(),
+    edaReportThreadId: typeof meta.edaReportThreadId === "string" ? meta.edaReportThreadId : null,
+    edaMessageSource: meta?.edaMessageSource === "upload" || meta?.edaMessageSource === "chat" ? meta.edaMessageSource : null,
+  });
+  convo.updatedAt = Date.now();
+  state.conversations.sort((a, b) => b.updatedAt - a.updatedAt);
+  persistState();
+  renderAll();
 }
 
 async function streamAssistantReply(conversationId, assistantMessage, userText, options = {}) {
@@ -822,21 +1033,33 @@ async function streamAssistantReply(conversationId, assistantMessage, userText, 
 }
 
 // 发送消息：写入当前会话并通过后端流式获取回复
-async function submitMessage(text, options = {}) {
+async function submitMessage(text, options = {}, uiOptions = {}) {
   const convo = getActiveConversation();
   if (!convo || state.isStreaming) return;
+
+  const hideUserMessage = Boolean(uiOptions.hideUserMessage);
+  const pendingLabel = typeof uiOptions.pendingLabel === "string" ? uiOptions.pendingLabel : "";
 
   if (!Array.isArray(convo.messages)) {
     convo.messages = [];
   }
 
-  convo.messages.push({ role: "user", text });
-  const assistantMessage = { role: "assistant", text: "", pending: true };
+  if (!hideUserMessage) {
+    convo.messages.push({ role: "user", text });
+  }
+  const assistantMessage = {
+    role: "assistant",
+    text: "",
+    pending: true,
+    pendingLabel,
+    edaReportThreadId: options?.eda_analysis ? convo.id : null,
+    edaMessageSource: options?.eda_analysis ? "chat" : null,
+  };
   convo.messages.push(assistantMessage);
   convo.updatedAt = Date.now();
 
   // 如果还是默认标题，用第一条用户消息更新标题
-  if (/^新聊天\s\d+$/.test(convo.title)) {
+  if (!hideUserMessage && /^新聊天\s\d+$/.test(convo.title)) {
     convo.title = shortTitle(text);
   }
 
@@ -894,12 +1117,42 @@ composerInput.addEventListener("input", autoResizeTextarea);
 // 新聊天按钮
 newChatBtn.addEventListener("click", createConversation);
 
+modelSwitch?.addEventListener("click", () => {
+  if (state.chatMode !== "general") {
+    closeModelMenu();
+    return;
+  }
+
+  ensureModelMenu();
+  if (!modelMenuEl) return;
+
+  if (modelMenuEl.hidden) {
+    syncModelMenuSelection();
+    openModelMenu();
+  } else {
+    closeModelMenu();
+  }
+
+  syncModeUi();
+});
+
 // 点击后切换到专家模式，并更新欢迎语。
 taskChipBtn?.addEventListener("click", () => {
   state.chatMode = state.chatMode === "expert" ? "general" : "expert";
   if (state.chatMode !== "expert") {
+    state.edaAnalysisEnabled = false;
     state.sqlAnalysisEnabled = false;
   }
+  syncModeUi();
+  persistState();
+});
+
+edaAnalysisToggleBtn?.addEventListener("click", () => {
+  if (state.chatMode !== "expert") {
+    alert("请先开启『专家模式』后再使用 EDA 分析功能。");
+    return;
+  }
+  state.edaAnalysisEnabled = !state.edaAnalysisEnabled;
   syncModeUi();
   persistState();
 });
@@ -912,13 +1165,48 @@ fileUploadInput?.addEventListener("change", async () => {
   const selectedFiles = Array.from(fileUploadInput.files || []);
   if (!selectedFiles.length) return;
 
+  const useEdaUpload = state.chatMode === "expert" && state.edaAnalysisEnabled;
+  const uploadEdaSummaries = [];
+  const uploadEdaFailures = [];
+  let uploadEdaThreadId = "";
+
+  const activeConvo = getActiveConversation();
+  let edaPendingMessage = null;
+
+  if (useEdaUpload && activeConvo) {
+    if (!Array.isArray(activeConvo.messages)) {
+      activeConvo.messages = [];
+    }
+    edaPendingMessage = { role: "assistant", text: "", pending: true, pendingLabel: "EDA分析中 🔍" };
+    activeConvo.messages.push(edaPendingMessage);
+    activeConvo.updatedAt = Date.now();
+    state.conversations.sort((a, b) => b.updatedAt - a.updatedAt);
+    state.isStreaming = true;
+    composerInput.disabled = true;
+    persistState();
+    renderAll();
+  }
+
   const existingIds = new Set(state.uploadedFiles.map((item) => item.id));
   for (const file of selectedFiles) {
     const formData = new FormData();
     formData.append("file", file);
 
     try {
-      const resp = await fetch("/api/upload", {
+      const active = getActiveConversation();
+      const sessionId = active?.id || "";
+      const useEda = useEdaUpload;
+      const query = new URLSearchParams();
+      if (useEda) {
+        query.set("use_eda", "true");
+        if (sessionId) {
+          query.set("session_id", sessionId);
+        }
+      }
+
+      const uploadUrl = query.toString() ? `/api/upload?${query.toString()}` : "/api/upload";
+
+      const resp = await fetch(uploadUrl, {
         method: "POST",
         body: formData,
       });
@@ -932,8 +1220,26 @@ fileUploadInput?.addEventListener("change", async () => {
 
       state.uploadedFiles.push({ id, name: returnedName });
       existingIds.add(id);
+
+      if (useEda && result && typeof result === "object") {
+        const edaPayload = result.eda;
+        const threadId = typeof result?.eda_thread_id === "string" && result.eda_thread_id ? result.eda_thread_id : sessionId;
+        if (threadId) {
+          uploadEdaThreadId = threadId;
+        }
+        const messageText = typeof edaPayload?.message === "string" ? edaPayload.message.trim() : "";
+
+        if (messageText) {
+          uploadEdaSummaries.push(`【${returnedName}】\n${messageText}`);
+        } else {
+          uploadEdaFailures.push(`【${returnedName}】upload解析失败，请重试。`);
+        }
+      }
     } catch (err) {
       console.error("上传失败:", err);
+      if (useEdaUpload) {
+        uploadEdaFailures.push(`【${file.name}】upload失败，请重试。`);
+      }
     }
   }
 
@@ -942,6 +1248,35 @@ fileUploadInput?.addEventListener("change", async () => {
   }
 
   syncModeUi();
+
+  if (useEdaUpload && edaPendingMessage) {
+    edaPendingMessage.pending = false;
+    edaPendingMessage.pendingLabel = "";
+
+    if (uploadEdaSummaries.length > 0) {
+      edaPendingMessage.text = uploadEdaSummaries.join("\n\n");
+      if (uploadEdaThreadId) {
+        edaPendingMessage.edaReportThreadId = uploadEdaThreadId;
+      }
+      edaPendingMessage.edaMessageSource = "upload";
+    } else if (uploadEdaFailures.length > 0) {
+      edaPendingMessage.text = uploadEdaFailures.join("\n");
+    } else {
+      edaPendingMessage.text = "upload失败或解析失败，请重试。";
+    }
+
+    if (activeConvo) {
+      activeConvo.updatedAt = Date.now();
+    }
+    state.conversations.sort((a, b) => b.updatedAt - a.updatedAt);
+    state.isStreaming = false;
+    composerInput.disabled = false;
+    persistState();
+    renderAll();
+    composerInput.focus();
+  } else if (uploadEdaSummaries.length > 0) {
+    appendAssistantSystemMessage(uploadEdaSummaries.join("\n\n"));
+  }
 });
 
 uploadStatus?.addEventListener("click", (e) => {
@@ -964,6 +1299,9 @@ sqlAnalysisToggleBtn?.addEventListener("click", () => {
     return;
   }
   state.sqlAnalysisEnabled = !state.sqlAnalysisEnabled;
+  if (state.sqlAnalysisEnabled) {
+    state.edaAnalysisEnabled = false;
+  }
   syncModeUi();
   persistState();
 });
@@ -981,6 +1319,7 @@ composerForm.addEventListener("submit", (e) => {
   if (!text || state.isStreaming) return;
 
   const dynamicOptions = {
+    eda_analysis: !!state.edaAnalysisEnabled,
     sql_analysis: !!state.sqlAnalysisEnabled,
     file_name: state.uploadedFiles.map((item) => item.name).join(",") || null
   };
@@ -993,6 +1332,7 @@ composerForm.addEventListener("submit", (e) => {
 
 // 初始化：优先恢复本地历史，否则新建一个会话
 clearHtmlPreviewState();
+ensureModelMenu();
 if (!restoreState()) {
   createConversation();
 } else {

@@ -30,6 +30,7 @@ class AppConfig:
 
     request_timeout: int
     history_max_messages: int
+    eda_api_base_url: str
     frontend_dir: Path
 
 
@@ -117,5 +118,6 @@ def load_config(project_root: Path) -> AppConfig:
         local_model_name=_pick_str(config_data, "local_model_name", "LOCAL_LLM_MODEL", "local-default-model"),
         request_timeout=_pick_int(config_data, "request_timeout", "YUNWU_TIMEOUT", 100),
         history_max_messages=_pick_int(config_data, "history_max_messages", "YUNWU_HISTORY_MAX_MESSAGES", 20),
+        eda_api_base_url=_pick_str(config_data, "eda_api_base_url", "EDA_API_BASE_URL", "http://127.0.0.1:8002"),
         frontend_dir=project_root / "frontend",
     )
