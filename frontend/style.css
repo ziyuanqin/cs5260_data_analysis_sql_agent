@@ -48,10 +48,10 @@ textarea {
 .sidebar {
   background: var(--sidebar);
   border-right: 1px solid #dedfe2;
-  padding: 14px 10px;
+  padding: 8px 10px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
   min-height: 0;
   overflow-y: auto;
 }
@@ -60,12 +60,25 @@ textarea {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 4px 6px;
+  padding: 0 0;
 }
 
-.logo-dot {
-  color: #111;
+.logo-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nus-logo {
+  width: 120px;
+  height: 120px;
+  object-fit: contain;
+}
+
+.course-title {
   font-size: 18px;
+  font-weight: 700;
+  color: #111827;
 }
 
 .collapse-btn {
@@ -76,11 +89,6 @@ textarea {
   width: 30px;
   height: 30px;
   cursor: pointer;
-}
-
-.nav-list {
-  display: grid;
-  gap: 4px;
 }
 
 .nav-btn {
@@ -108,11 +116,40 @@ textarea {
   margin-top: 8px;
 }
 
+.history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px;
+}
+
 .history-block h3 {
-  margin: 8px 8px;
+  margin: 8px 0;
   font-size: 13px;
   color: var(--muted);
   font-weight: 500;
+}
+
+.history-clear-btn {
+  border: 0;
+  background: transparent;
+  color: #6b7280;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  opacity: 0.6;
+}
+
+.history-clear-btn:hover {
+  background: #d7dbe2;
+  color: #111827;
+  opacity: 1;
 }
 
 .history-item {

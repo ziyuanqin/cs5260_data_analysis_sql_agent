@@ -325,6 +325,24 @@ function normalizeMathDelimiters(text) {
     .replaceAll("\\\\]", "\\]");
 }
 
+function normalizeCodeFencePayload(text) {
+  if (typeof text !== "string" || text.length === 0) return "";
+
+  let normalized = text;
+  const hasFenceSignal = /```|\\`\\`\\`|&#96;&#96;&#96;|&grave;&grave;&grave;/.test(normalized);
+  if (!hasFenceSignal) {
+    return normalized;
+  }
+
+  // 某些后端会把换行和反引号二次转义，先做轻量还原以便识别代码块。
+  if (!normalized.includes("\n") && normalized.includes("\\n")) {
+    normalized = normalized.replaceAll("\\n", "\n");
+  }
+
+  normalized = normalized.replaceAll("\\t", "\t").replaceAll("\\`\\`\\`", "```").replaceAll("&#96;", "`").replaceAll("&grave;", "`");
+  return normalized;
+}
+
 function queueMathTypeset() {
   if (!messageList) return;
 
@@ -385,7 +403,7 @@ function isSpecialMarkdownBlockStart(lines, idx) {
 
 function renderAssistantMessageHtml(text) {
   // 轻量 Markdown 渲染：支持代码块、标题、列表、引用、表格和基础行内格式。
-  const normalizedText = normalizeMathDelimiters(text);
+  const normalizedText = normalizeCodeFencePayload(normalizeMathDelimiters(text));
   const lines = normalizedText.split(/\r?\n/);
   const parts = [];
   let idx = 0;
@@ -399,6 +417,18 @@ function renderAssistantMessageHtml(text) {
     }
 
     if (isFenceStartLine(line)) {
+      const trimmed = line.trim();
+      const inlineFenceMatch = trimmed.match(/^```([a-zA-Z0-9_+-]*)\s+([\s\S]*?)```$/);
+      if (inlineFenceMatch) {
+        const inlineLang = (inlineFenceMatch[1] || "text").trim().toLowerCase() || "text";
+        const inlineCode = inlineFenceMatch[2] || "";
+        parts.push(
+          `<div class="code-block"><div class="code-head">${escapeHtml(inlineLang)}</div><pre><code>${escapeHtml(inlineCode)}</code></pre></div>`
+        );
+        idx += 1;
+        continue;
+      }
+
       const lang = getFenceLanguage(line) || "text";
       const codeLines = [];
       idx += 1;
@@ -791,6 +821,31 @@ function deleteConversation(conversationId) {
   renderAll();
 }
 
+// 清除所有聊天记录
+function clearAllHistory() {
+  // 确认删除
+  if (!confirm("确定要删除所有聊天记录吗？此操作无法撤销。")) {
+    return;
+  }
+
+  // 清除所有会话对应的服务器端数据
+  for (const convo of state.conversations) {
+    resetConversationOnServer(convo.id);
+  }
+
+  // 重置state
+  state.conversations = [];
+  state.activeConversationId = null;
+  state.chatCounter = 1;
+
+  // 创建一个新的空白会话
+  createConversation();
+
+  // 持久化并重新渲染
+  persistState();
+  renderAll();
+}
+
 // 渲染历史列表
 function renderHistory() {
   historyList.innerHTML = "";
@@ -1116,6 +1171,10 @@ composerInput.addEventListener("input", autoResizeTextarea);
 
 // 新聊天按钮
 newChatBtn.addEventListener("click", createConversation);
+
+// 清除所有聊天记录按钮
+const clearHistoryBtn = document.getElementById("clearHistoryBtn");
+clearHistoryBtn?.addEventListener("click", clearAllHistory);
 
 modelSwitch?.addEventListener("click", () => {
   if (state.chatMode !== "general") {

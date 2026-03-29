@@ -24,19 +24,18 @@
     <div class="layout">
       <!-- 左侧导航栏（视觉风格参考截图） -->
       <aside class="sidebar">
-        <div class="brand-row">
-          <div class="logo-dot">◉NUS 5260◉</div>
-          <button class="collapse-btn" aria-label="折叠">☰</button>
+        <div class="logo-container">
+          <img src="./nus_logo.jpg" alt="NUS Logo" class="nus-logo" />
+          <span class="course-title">CS5260</span>
         </div>
 
         <button id="newChatBtn" class="nav-btn primary">新聊天</button>
 
-        <nav class="nav-list">
-          <button class="nav-btn">搜索聊天</button>
-        </nav>
-
         <section class="history-block">
-          <h3>聊天</h3>
+          <div class="history-header">
+            <h3>聊天</h3>
+            <button id="clearHistoryBtn" class="history-clear-btn" type="button" aria-label="清除所有聊天记录">✕</button>
+          </div>
           <div id="historyList"></div>
         </section>
       </aside>
