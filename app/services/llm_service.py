@@ -124,6 +124,7 @@ class ChatService:
             provider: str | None = None,
             model: str | None = None,
             provider_options: dict[str, Any] | None = None,
+            sql_app: Any = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """按顺序产出聊天事件：token/final/error。
 
@@ -133,7 +134,7 @@ class ChatService:
         opts = provider_options or {}
         is_eda_mode = opts.get("eda_analysis", False)
         is_sql_mode = opts.get("sql_analysis", False)
-
+        print(f"DEBUG: 进入 Service 层. is_sql_mode={is_sql_mode}, sql_app_exists={sql_app is not None}")
         # --- 情况 A: 运行 EDA Agent ---
         if is_eda_mode:
             self._append_session_message(session_id, "user", user_message)
@@ -158,38 +159,37 @@ class ChatService:
 
         # --- 情况 B: 运行 SQL 专家 Agent ---
         if is_sql_mode:
-            self._append_session_message(session_id, "user", user_message)
-            raw_file_names = opts.get("file_name", "")
-            if isinstance(raw_file_names, str):
-                # 兼容 "data1.csv,data2.csv" 这种格式
-                file_list = [f.strip() for f in raw_file_names.split(",") if f.strip()]
+            # self._append_session_message(session_id, "user", user_message)
+
+            if sql_app:
+                print(f"--- [Session {session_id}] 检测到数据库连接，使用 Mode B (MySQL/PostgreSQL) ---")
+                graph_app = sql_app
+                db_type = "mysql"  # 这里的类型应与你 get_sql_graph_app 支持的一致
+                valid_paths = []
             else:
-                file_list = [raw_file_names] if raw_file_names else []
+                print(f"--- [Session {session_id}] 未检测到数据库，降级使用文件模式 (SQLite) ---")
+                graph_app = get_sql_graph_app(db_type="sqlite")
+                db_type = "sqlite"
+                raw_file_names = opts.get("file_name", "")
+                file_list = [f.strip() for f in raw_file_names.split(",") if f.strip()] if isinstance(raw_file_names, str) else ([raw_file_names] if raw_file_names else [])
+                valid_paths = []
+                for f_name in file_list:
+                    full_path = os.path.join(os.getcwd(), "backend", "dataset", f_name)
+                    if os.path.exists(full_path):
+                        valid_paths.append(full_path)
 
-            # 3. 构建绝对路径并校验文件是否存在
-            valid_paths = []
-            for f_name in file_list:
-                # 确保路径与 upload.py 保存的位置严格一致
-                full_path = os.path.join(os.getcwd(), "backend", "dataset", f_name)
-                if os.path.exists(full_path):
-                    valid_paths.append(full_path)
-                else:
-                    print(f"⚠️ 警告: 文件未找到，跳过: {full_path}")
-
-            # 4. 获取动态编译的 Graph App
-            # 每次请求动态创建 engine，保证多用户并发时数据库隔离
-            graph_app = get_sql_graph_app(db_type="sqlite")
 
             config = {"configurable": {"thread_id": session_id}}
             inputs = {
                 "messages": [HumanMessage(content=user_message)],
-                "db_type": "sqlite",
-                "excel_paths": valid_paths, # 这里现在是完整的路径列表
+                "db_type": db_type,
+                "excel_paths": valid_paths,
                 "retry_count": 0
             }
 
-            full_analysis_text = "" # 用于保存完整回复
+            full_analysis_text = ""
             try:
+                # 注意：这里改为使用我们选定的 graph_app
                 async for chunk in graph_app.astream(inputs, config=config, stream_mode="updates"):
                     if "sql_gen" in chunk:
                         sql = chunk["sql_gen"].get("sql_query")
@@ -200,25 +200,16 @@ class ChatService:
 
                     if "analysis" in chunk:
                         ans = chunk["analysis"].get("analysis", "")
-                        full_analysis_text += ans # 这一步非常重要！
-                        yield {
-                            "event": "token",
-                            "payload": {"delta": ans}
-                        }
+                        full_analysis_text += ans
+                        yield {"event": "token", "payload": {"delta": ans}}
 
-                # 只有保存了，下一次对话才能带上这个上下文
                 if full_analysis_text:
                     self._append_session_message(session_id, "assistant", full_analysis_text)
-                    yield {
-                        "event": "final",
-                        "payload": {"text": full_analysis_text}
-                    }
+                    yield {"event": "final", "payload": {"text": full_analysis_text}}
 
             except Exception as exc:
-                yield {
-                    "event": "error",
-                    "payload": {"message": f"SQL Agent 运行出错：{str(exc)}"}
-                }
+                yield {"event": "error", "payload": {"message": f"SQL Agent 运行出错：{str(exc)}"}}
+            return
         else:
 
             provider_name = self._resolve_provider_name(provider)

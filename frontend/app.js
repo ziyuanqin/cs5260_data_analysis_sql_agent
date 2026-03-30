@@ -22,6 +22,13 @@ const modelSwitch = document.querySelector(".model-switch");
 
 const GENERAL_MODELS = ["deepseek", "openai"];
 
+//Database Connection
+const dbConnectBtn = document.getElementById("dbConnectBtn");
+const dbModal = document.getElementById("dbModal");
+const closeModal = document.getElementById("closeModal");
+const dbForm = document.getElementById("dbForm");
+const dbDisconnectBtn = document.getElementById("dbDisconnectBtn");
+
 // 可选后端配置：可在浏览器控制台设置 window.__CHAT_BACKEND_CONFIG__ 动态切换。
 // 例如：window.__CHAT_BACKEND_CONFIG__ = { provider: "local_http", model: "qwen2.5:7b" }
 const CHAT_BACKEND_CONFIG = window.__CHAT_BACKEND_CONFIG__ || {};
@@ -164,8 +171,18 @@ function getModeGreetingText() {
 function syncModeUi() {
   const isExpert = state.chatMode === "expert";
 
+  const dbSidebarSection = document.querySelector(".sidebar-footer"); // 选中包含按钮的父容器
+  if (dbSidebarSection) {
+    // 只有专家模式才显示该区域
+    dbSidebarSection.style.display = isExpert ? "flex" : "none";
+  }
+
   if (isExpert) {
     closeModelMenu();
+  }
+
+  if (typeof updateDbUI === "function") {
+    updateDbUI();
   }
 
   if (modelSwitch) {
@@ -756,6 +773,7 @@ function persistState() {
       generalModel: state.generalModel,
       edaAnalysisEnabled: state.edaAnalysisEnabled,
       sqlAnalysisEnabled: state.sqlAnalysisEnabled,
+      isDbConnected: state.isDbConnected,
     })
   );
 }
@@ -796,6 +814,7 @@ function restoreState() {
     state.generalModel = GENERAL_MODELS.includes(parsed.generalModel) ? parsed.generalModel : "deepseek";
     state.edaAnalysisEnabled = Boolean(parsed.edaAnalysisEnabled);
     state.sqlAnalysisEnabled = Boolean(parsed.sqlAnalysisEnabled);
+    state.isDbConnected = Boolean(parsed.isDbConnected);
 
     if (!Number.isFinite(state.chatCounter) || state.chatCounter < 1) {
       state.chatCounter = normalizedConversations.length + 1;
@@ -1014,6 +1033,143 @@ function renderAll() {
   syncMainLayout();
   syncModeUi();
 }
+
+function initDbConnection() {
+
+  const dbForm = document.getElementById("dbForm");
+
+  if (!dbConnectBtn || !dbModal || !closeModal || !dbForm) return;
+
+  dbConnectBtn.addEventListener("click", () => {
+    dbModal.classList.add("active");
+    dbModal.hidden = false;
+  });
+
+  closeModal.addEventListener("click", () => {
+    dbModal.classList.remove("active");
+    dbModal.hidden = true;
+  });
+
+  dbDisconnectBtn?.addEventListener("click", async () => {
+    if (!confirm("确定要断开连接并清除会话缓存吗？")) return;
+
+    try {
+      // 1. 断开物理连接
+      const disconnectRes = await fetch("/api/db/disconnect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: state.activeConversationId })
+      });
+
+      // 2. 同时清理会话历史（可选，但强烈建议，防止字段名幻觉）
+      await fetch("/api/chat/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: state.activeConversationId })
+      });
+
+      const data = await disconnectRes.json();
+      if (data.ok) {
+        alert("已断开连接并重置会话");
+        state.isDbConnected = false;
+        updateDbUI();
+        // 如果你有消息列表，建议这里也清空一下 UI 上的对话记录
+        // messages = []; renderMessages();
+      }
+    } catch (err) {
+      console.error("Disconnect Error:", err);
+    }
+  });
+
+  function updateDbUI() {
+    const isExpert = state.chatMode === "expert";
+    const dbSidebarSection = document.querySelector(".sidebar-footer");
+
+    // 1. 如果不是专家模式，直接彻底隐藏
+    if (!isExpert) {
+      if (dbSidebarSection) dbSidebarSection.style.display = "none";
+      return;
+    }
+
+    // 2. 如果是专家模式，显示容器并根据连接状态切换按钮
+    if (dbSidebarSection) dbSidebarSection.style.display = "flex";
+
+    if (state.isDbConnected) {
+      dbConnectBtn.style.display = "none";
+      dbDisconnectBtn.style.display = "flex";
+    } else {
+      dbConnectBtn.style.display = "flex";
+      dbDisconnectBtn.style.display = "none";
+    }
+  }
+
+  dbForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+
+    // 1. 强制获取当前的 Session ID
+    const currentSessionId = state.activeConversationId;
+    if (!currentSessionId) {
+      alert("错误：未找到有效的会话ID，请刷新页面重试。");
+      return;
+    }
+
+    const formData = new FormData(dbForm);
+    const rawInfo = Object.fromEntries(formData.entries());
+
+    // 2. 显式构建 Payload，确保字段名与后端 Pydantic 模型完全一致
+    const payload = {
+      session_id: currentSessionId,
+      host: rawInfo.host,
+      port: parseInt(rawInfo.port) || 3306, // 强制转为整数
+      user: rawInfo.user,
+      password: rawInfo.password,
+      database: rawInfo.database
+    };
+
+    // 调试用：在控制台打印发送的内容，方便你核对
+    console.log("正在发送数据库连接请求:", payload);
+
+    try {
+      const response = await fetch("/api/db/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (response.ok) {
+        alert("✅ 数据库连接成功！");
+        state.isDbConnected = true; // 移动到这里：确保成功才置为 true
+        updateDbUI();              // 移动到这里
+        dbModal.hidden = true;
+        dbModal.classList.remove("active");
+        dbForm.reset();
+      } else {
+        state.isDbConnected = false; // 明确失败状态
+        updateDbUI();
+        const errDetail = await response.json();
+        alert(`❌ 连接失败: ${JSON.stringify(errDetail.detail)}`);
+      }
+    } catch (err) {
+      console.error("Network error:", err);
+      alert("网络错误，无法连接服务器。");
+    }
+  });
+}
+
+// 3. 脚本入口：等待 DOM 加载完毕再启动
+document.addEventListener("DOMContentLoaded", () => {
+  // 恢复状态
+  const restored = restoreState();
+  if (!restored) {
+    createConversation();
+  } else {
+    renderAll();
+  }
+
+  // 初始化模型菜单和数据库功能
+  ensureModelMenu();
+  initDbConnection();
+});
 
 function appendAssistantSystemMessage(text, meta = {}) {
   if (typeof text !== "string" || !text.trim()) return;

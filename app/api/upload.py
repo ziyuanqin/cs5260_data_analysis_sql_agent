@@ -3,9 +3,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Request
 import backend.data_analysis.agent as agent
 from app.api.eda import _state_summary, _last_ai_message
 
-# 模仿 chat.py 的 prefix 风格
 router = APIRouter(prefix="/api/upload", tags=["upload"])
-
 
 @router.post("")
 async def save_uploaded_file(

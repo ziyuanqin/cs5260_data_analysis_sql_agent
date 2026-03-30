@@ -24,9 +24,20 @@ def get_chat_service(request: Request) -> ChatService:
 
 
 @router.post("/stream")
-async def chat_stream(req: ChatRequest, chat_service: ChatService = Depends(get_chat_service)):
+async def chat_stream(req: ChatRequest,request: Request, chat_service: ChatService = Depends(get_chat_service)):
     """以流式方式返回回复，供前端增量渲染。"""
+    sql_app = None
+    if hasattr(request.app.state, "sql_apps"):
+        # 🌟 强制转为字符串进行匹配，防止 UUID 对象与字符串 Key 匹配失败
+        sid = str(req.session_id)
+        sql_app = request.app.state.sql_apps.get(sid)
 
+        if sql_app:
+            print(f"--- [DEBUG] 成功匹配 Session: {sid} ---")
+        else:
+            # 加上这行调试，看看字典里到底存了什么，以及你现在查的是什么
+            print(f"--- [DEBUG] 匹配失败。当前字典内容: {list(request.app.state.sql_apps.keys())}")
+            print(f"--- [DEBUG] 当前请求查询的 ID: {sid} ---")
     async def event_generator() -> AsyncGenerator[str, None]:
         # 把服务层产生的事件字典转换为 SSE 文本帧。
         async for event in chat_service.stream_chat_events(
@@ -36,6 +47,7 @@ async def chat_stream(req: ChatRequest, chat_service: ChatService = Depends(get_
             provider=req.provider,
             model=req.model,
             provider_options=req.provider_options,
+            sql_app=sql_app,
         ):
             yield sse_data(event)
 

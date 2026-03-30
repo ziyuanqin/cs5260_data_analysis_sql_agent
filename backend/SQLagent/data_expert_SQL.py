@@ -72,21 +72,32 @@ class SQLExpert:
         return {"excel_paths": None, "active_tables": new_added}
 
     def schema_awareness(self, state: AgentState, engine):
-        # 即使 schema_info 已存在也建议重新探测，以支持对话中途新增文件
         try:
             inspector = inspect(engine)
             table_names = inspector.get_table_names()
-            if not table_names:
-                return {"schema_info": "当前数据库为空，请先上传数据。"}
 
-            schema_context = []
+            full_schema = []
             for table in table_names:
-                columns = [col['name'] for col in inspector.get_columns(table)]
-                # 获取 1 条样例数据帮助 LLM 更有把握
-                sample = pd.read_sql(f"SELECT * FROM {table} LIMIT 1", engine)
-                schema_context.append(f"Table: {table}, Columns: {columns}, Sample: {sample.to_dict(orient='records')}")
+                # 获取列信息：名称和类型
+                cols = inspector.get_columns(table)
+                col_info = [f"{c['name']} ({c['type']})" for c in cols]
 
-            return {"schema_info": "\n".join(schema_context), "retry_count": 0}
+                # 关键：获取主键和外键，帮助 AI 理解字段差异
+                pk = inspector.get_pk_constraint(table).get("constrained_columns", [])
+                fk = inspector.get_foreign_keys(table)
+
+                schema_str = f"TABLE: {table}\nCOLUMNS: {', '.join(col_info)}\nPRIMARY KEY: {pk}"
+                if fk:
+                    schema_str += f"\nFOREIGN KEYS: {fk}"
+
+                full_schema.append(schema_str)
+
+            # 告诉 AI 明确的物理结构
+            return {
+                "schema_info": "\n\n".join(full_schema),
+                "retry_count": 0,
+                "active_tables": table_names
+            }
         except Exception as e:
             return {"error": f"Schema 探测失败: {str(e)}"}
 
@@ -145,6 +156,13 @@ class SQLExpert:
         
         - [USER QUESTION]: $question
         
+        ### CRITICAL RULES FOR COLUMN NAMES
+        - RULE 1: [Database Schema] is the ONLY source of truth. 
+        - RULE 2: If the user asks for 'User ID' but Table A has 'uid' and Table B has 'userid', you MUST use the exact name specified in the [Database Schema] for that specific table.
+        - RULE 3: DO NOT use column names from [Conversation History] if they are not present in the current [Database Schema]. The database environment may have changed.
+        - RULE 4: Always prefix columns with table names (e.g., `table_a.uid`) to avoid ambiguity.
+        
+        PRIORITY: If the [Database Schema] conflicts with [Conversation History], ALWAYS follow the [Database Schema]. The database structure has changed.
         1. OUTPUT FORMAT: Return ONLY the raw SQL string. Do not include Markdown blocks (```sql), explanations, or any conversational filler.
         2. SCHEMA FIDELITY: Do not hallucinate columns. Use ONLY the columns listed in the [Database Schema]. If a required column is missing, use the most logical substitute or return a comment indicating the missing field.
         3. ALIASING: Always provide clear, English aliases for aggregated or calculated columns (e.g., `SUM(sales) AS total_revenue`).
@@ -197,6 +215,7 @@ class SQLExpert:
     def analyze_result(self, state: AgentState):
 
         current_question = state["messages"][-1].content if state.get("messages") else "Unknown problem"
+        query_result = state.get('query_result')
 
         if state.get('error') and state.get('retry_count', 0) >= 3:
 
@@ -209,6 +228,11 @@ class SQLExpert:
         analysis_template = Template(r"""
         ### ROLE
         You are a Senior Strategic Business Consultant and Data Storyteller. Your goal is to transform raw query results into high-impact executive insights.
+        
+        ###Constraints (must be observed)
+        1. It is strictly prohibited to output any SQL code, technical parameter or database table name.
+        2. Only output business conclusions and action suggestions.
+        3. If the data is empty, please politely inform the user that the relevant record is not found.
         
         ### CONTEXT
         - [User's Strategic Question]: $question

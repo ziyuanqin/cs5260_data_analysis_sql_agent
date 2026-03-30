@@ -38,6 +38,33 @@
           </div>
           <div id="historyList"></div>
         </section>
+
+        <div id="dbSidebarSection" class="sidebar-footer" style="display: none;">
+          <button id="dbConnectBtn" class="sidebar-btn">
+            <span>🔌 Database Connection</span>
+          </button>
+
+          <button id="dbDisconnectBtn" class="sidebar-btn btn-danger" style="display: none;">
+            <span>🚫 Disconnect DB</span>
+          </button>
+        </div>
+
+        <div id="dbModal" class="modal-overlay" hidden>
+          <div class="modal-content">
+            <h3>Database Connection</h3>
+            <form id="dbForm">
+              <input type="text" name="host" placeholder="Host ( e.g. localhost )" required>
+              <input type="text" name="port" placeholder="Port ( e.g. 5432 )" required>
+              <input type="text" name="user" placeholder="Username" required>
+              <input type="password" name="password" placeholder="Password" required>
+              <input type="text" name="database" placeholder="Database Name" required>
+              <div class="modal-actions">
+                <button type="button" id="closeModal">Cancel</button>
+                <button type="submit" class="primary-btn">Connect</button>
+              </div>
+            </form>
+          </div>
+        </div>
       </aside>
 
       <!-- 右侧主内容区 -->
