@@ -340,6 +340,42 @@ function normalizeCodeFencePayload(text) {
   }
 
   normalized = normalized.replaceAll("\\t", "\t").replaceAll("\\`\\`\\`", "```").replaceAll("&#96;", "`").replaceAll("&grave;", "`");
+
+  // 兼容流式输出中 "blockquote + fence" 的混合写法：
+  // > ```sql
+  // > SELECT ...
+  // col2 ...
+  // > ```
+  // 这类内容在前端解析时容易断裂，先归一成标准 fenced code block。
+  const lines = normalized.split(/\r?\n/);
+  const repaired = [];
+  let inQuotedFence = false;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] || "";
+    const trimmed = line.trim();
+
+    if (!inQuotedFence && /^>\s*```/.test(trimmed)) {
+      repaired.push(trimmed.replace(/^>\s*/, ""));
+      inQuotedFence = true;
+      continue;
+    }
+
+    if (inQuotedFence && /^>\s*```\s*$/.test(trimmed)) {
+      repaired.push("```");
+      inQuotedFence = false;
+      continue;
+    }
+
+    if (inQuotedFence) {
+      repaired.push(line.replace(/^\s*>\s?/, ""));
+      continue;
+    }
+
+    repaired.push(line);
+  }
+
+  normalized = repaired.join("\n");
   return normalized;
 }
 
@@ -374,6 +410,8 @@ function renderInlineMarkdown(text) {
   });
 
   html = html.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+  // 单星号是强调（斜体），与双星号加粗区分处理。
+  html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");
   html = html.replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
   html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
 

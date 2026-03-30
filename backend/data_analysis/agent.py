@@ -31,7 +31,8 @@ from backend.data_analysis.processors import (
 from backend.data_analysis.html_report import render_eda_html
 from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
-load_dotenv()
+# 优先使用项目 .env，避免被 shell 中旧变量污染导致鉴权失败。
+load_dotenv(override=True)
 
 # Uncomment this line if make it compulsory for user to provide API key, by default the API key will be set in env variable
 # llm: ChatOpenAI | None = None

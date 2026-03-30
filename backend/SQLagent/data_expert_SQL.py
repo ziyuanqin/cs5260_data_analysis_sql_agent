@@ -13,7 +13,8 @@ from sqlalchemy import create_engine, inspect
 from dotenv import load_dotenv
 from backend.SQLagent.registry import DOMAIN_REGISTRY
 
-load_dotenv()
+# 优先使用项目 .env，避免被 shell 中旧变量污染导致鉴权失败。
+load_dotenv(override=True)
 
 # 1. 定义状态结构
 class AgentState(TypedDict):

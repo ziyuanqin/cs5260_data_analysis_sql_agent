@@ -5,3 +5,5 @@ __pycache__/
 # Local uploaded datasets
 dataset/
 backend/dataset/
+
+.env
