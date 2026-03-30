@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from backend.SQLagent.main import get_sql_graph_app
+from app.utils.crypto import PUBLIC_KEY, decrypt_password
 
 router = APIRouter(prefix="/api/db", tags=["database"])
 
@@ -12,29 +13,40 @@ class DBConnectRequest(BaseModel):
     password: str
     database: str
 
+
+@router.get("/public-key")
+async def get_public_key():
+    return {"public_key": PUBLIC_KEY}
+
 @router.post("/connect")
 async def connect_db(request: Request, req: DBConnectRequest):
     print(f"--- 尝试为 Session {req.session_id} 连接数据库: {req.database} ---")
     try:
-        # 1. 构造连接 URL
-        mysql_url = f"mysql+pymysql://{req.user}:{req.password}@{req.host}:{req.port}/{req.database}"
+        # --- 核心改动：解密密码 ---
+        # 此时 req.password 是前端传来的长串 RSA 密文
+        real_password = decrypt_password(req.password)
 
-        # 2. 生成针对该 MySQL 连接的模式 B 实例
+        # 1. 使用解密后的真实密码构造连接 URL
+        mysql_url = f"mysql+pymysql://{req.user}:{real_password}@{req.host}:{req.port}/{req.database}"
+
+        # 2. 生成实例 (逻辑保持不变)
         sql_app = get_sql_graph_app(db_type="mysql", mysql_url=mysql_url)
 
         # 3. 存储到全局状态
         if not hasattr(request.app.state, "sql_apps"):
             request.app.state.sql_apps = {}
 
-        # 绑定到当前会话
         request.app.state.sql_apps[req.session_id] = sql_app
 
-        print(f"✅ 连接成功，Session {req.session_id} 现在优先使用数据库表")
+        print(f"✅ 连接成功，Session {req.session_id} 密码已安全解密并验证")
         return {"ok": True, "message": f"成功连接至 {req.database}"}
 
+    except ValueError as ve:
+        # 处理解密相关的安全错误
+        print(f"🔒 安全验证失败: {str(ve)}")
+        raise HTTPException(status_code=403, detail="密码解密失败，传输可能已被干扰")
     except Exception as e:
         print(f"❌ 连接失败: {str(e)}")
-        # 返回 400 会让前端 JavaScript 的 try...catch 捕获到错误并 alert
         raise HTTPException(status_code=400, detail=f"数据库连接失败: {str(e)}")
 
 @router.post("/disconnect")

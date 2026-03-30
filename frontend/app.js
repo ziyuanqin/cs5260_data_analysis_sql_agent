@@ -1106,23 +1106,24 @@ function initDbConnection() {
   dbForm.addEventListener("submit", async (e) => {
     e.preventDefault();
 
-    // 1. 强制获取当前的 Session ID
-    const currentSessionId = state.activeConversationId;
-    if (!currentSessionId) {
-      alert("错误：未找到有效的会话ID，请刷新页面重试。");
-      return;
-    }
+    // 1. 先从后端获取公钥 (也可以在页面加载时获取)
+    const keyRes = await fetch("/api/db/public-key");
+    const { public_key } = await keyRes.json();
 
     const formData = new FormData(dbForm);
     const rawInfo = Object.fromEntries(formData.entries());
 
-    // 2. 显式构建 Payload，确保字段名与后端 Pydantic 模型完全一致
+    // 2. 使用 RSA 加密密码
+    const encryptor = new JSEncrypt();
+    encryptor.setPublicKey(public_key);
+    const encryptedPassword = encryptor.encrypt(rawInfo.password);
+
     const payload = {
-      session_id: currentSessionId,
+      session_id: state.activeConversationId,
       host: rawInfo.host,
-      port: parseInt(rawInfo.port) || 3306, // 强制转为整数
+      port: parseInt(rawInfo.port),
       user: rawInfo.user,
-      password: rawInfo.password,
+      password: encryptedPassword, // 传输的是密文
       database: rawInfo.database
     };
 
