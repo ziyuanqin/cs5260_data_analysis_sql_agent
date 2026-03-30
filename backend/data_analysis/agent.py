@@ -357,6 +357,9 @@ def node_custom_eda(state: AgentState) -> AgentState:
     log.info("[node_custom_eda] Done: type=%s", result.get("type"))
     txt   = result.get("text_result", "")
     reply = f"✅ **{result['type'].replace('_',' ').title()}** complete." + (f"\n\n{txt}" if txt else "")
+    if result.get("plot_b64"):
+        img_md = f"\n\n![plot](data:image/png;base64,{result['plot_b64']})"
+    reply += img_md
     return {**state, "custom_result": result, "step": "custom_complete",
             "awaiting_human": False,
             "messages": [AIMessage(content=reply)]}

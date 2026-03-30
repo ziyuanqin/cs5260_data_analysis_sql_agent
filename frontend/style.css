@@ -274,6 +274,19 @@ textarea {
   font-weight: 700;
 }
 
+.msg .bubble img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  display: block;
+}
+
+/* 限制整体气泡最大宽度 */
+.msg.assistant .bubble {
+  max-width: 680px;   /* 你可以调，比如 600 / 700 */
+  overflow: hidden;
+}
+
 .user-card p {
   margin: 2px 0 0;
   color: var(--muted);

@@ -426,6 +426,11 @@ function renderInlineMarkdown(text) {
     return token;
   });
 
+  html = html.replace(
+      /!\[([^\]]*)\]\((data:image\/[a-zA-Z]+;base64,[^)]+)\)/g,
+      '<img src="$2" alt="$1" class="inline-image" />'
+  );
+
   html = html.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
   // 单星号是强调（斜体），与双星号加粗区分处理。
   html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");

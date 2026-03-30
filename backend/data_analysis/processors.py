@@ -395,11 +395,21 @@ Fill NaN:         {{"op":"fill_nan","col":"<col>","value":"<val_or_mean_or_media
 Unsupported:      {{"op":"unsupported","message":"<str>"}}
 """
         resp = llm.invoke([HumanMessage(content=prompt)])
+        raw = resp.content.strip()
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not match:
+            return {"error": f"No valid JSON found: {raw[:200]}"}
+
+        json_str = match.group(0)
+
+        # 👉 Step 2: 安全解析
         try:
-            action = json.loads(resp.content.strip())
-        except Exception:
-            return {"error": f"Could not parse cleaning action: {resp.content[:200]}",
-                    "df": df, "log": None}
+            action = json.loads(json_str)
+        except Exception as e:
+            return {
+                "error": f"JSON parse failed: {str(e)}",
+                "raw": raw[:200]
+            }
 
         op = action.get("op", "")
         try:
@@ -505,7 +515,8 @@ class CustomEDAEngine:
 
 User: "{user_request}"
 
-Reply ONLY with JSON matching one schema:
+Reply ONLY with valid JSON.
+DO NOT include markdown, backticks, or explanations.
 Bar:        {{"action":"bar_plot","x_col":"<col>","y_col":"<col|null>","agg":"count|mean|sum","title":"<str>"}}
 Box:        {{"action":"box_plot","y_col":"<col>","x_col":"<col|null>","title":"<str>"}}
 Histogram:  {{"action":"histogram","col":"<col>","bins":20,"title":"<str>"}}
