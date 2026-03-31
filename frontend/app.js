@@ -1,3 +1,19 @@
+
+// 监听窗口关闭或刷新
+window.addEventListener("beforeunload", () => {
+  // 注意：在 beforeunload 中，fetch 可能被挂起
+  // 使用 navigator.sendBeacon 是最稳妥的断后方案
+  const url = "/api/chat/cleanup";
+  const data = JSON.stringify({});
+
+  if (navigator.sendBeacon) {
+    navigator.sendBeacon(url, data);
+  } else {
+    // 降级方案
+    fetch(url, { method: "POST", keepalive: true });
+  }
+});
+
 // 前端主控脚本：负责会话状态管理、消息渲染、SSE 流式接收。
 const STORAGE_KEY = "agent_ui_chat_sessions_v1";
 
@@ -56,6 +72,33 @@ const state = {
 };
 
 let modelMenuEl = null;
+
+/**
+ * 触发后端全量文件清理
+ */
+async function triggerGlobalCleanup() {
+  try {
+    const url = "/api/chat/cleanup";
+
+    // 优先使用 fetch 发送请求（带上必要的 Headers）
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}) // 即便后端不需要参数，也传个空对象
+    });
+
+    // 清除前端相关状态
+    state.uploadedFiles = [];
+    state.file_name = "";
+
+    // 如果有 UI 上的上传列表，记得同步
+    if (typeof renderAll === "function") renderAll();
+
+    console.log("--- [Cleanup] 后端文件已清空 ---");
+  } catch (err) {
+    console.error("清理失败:", err);
+  }
+}
 
 function getGeneralModelText() {
   const selected = GENERAL_MODELS.includes(state.generalModel) ? state.generalModel : "deepseek";
@@ -1011,11 +1054,39 @@ function renderMessages() {
         const downloadCsvBtn = document.createElement("button");
         downloadCsvBtn.className = "eda-report-btn";
         downloadCsvBtn.type = "button";
-        downloadCsvBtn.textContent = "下载CSV";
+        downloadCsvBtn.textContent = "Download CSV";
         downloadCsvBtn.addEventListener("click", () => {
           downloadEdaCsv(msg.edaReportThreadId);
         });
         actions.appendChild(downloadCsvBtn);
+
+        const sqlAnalysisBtn = document.createElement("button");
+        sqlAnalysisBtn.className = "eda-report-btn"; // 维持样式一致
+        sqlAnalysisBtn.type = "button";
+        sqlAnalysisBtn.textContent = "Continue SQL";
+        sqlAnalysisBtn.addEventListener("click", () => {
+          state.sqlAnalysisEnabled = true;
+          state.edaAnalysisEnabled = false;
+
+          const messageContent = msg.text || "";
+          const fileMatch = messageContent.match(/`(.+?\.csv)`/);
+          if (messageContent.includes("✅ **Saved**") && fileMatch && fileMatch[1]) {
+            const newFileName = fileMatch[1].split('/').pop();
+            state.file_name = newFileName;
+            state.uploadedFiles = [{
+              id: "cleaned_" + Date.now(),
+              name: newFileName,
+              isCleaned: true
+            }];
+          }
+
+          if (typeof syncModeUi === "function") syncModeUi();
+          if (typeof persistState === "function") persistState();
+          if (typeof renderAll === "function") renderAll();
+
+          console.log("已切换至 SQL 分析模式");
+        });
+        actions.appendChild(sqlAnalysisBtn);
       }
 
       if (actions.childElementCount > 0) {
@@ -1333,8 +1404,17 @@ async function submitMessage(text, options = {}, uiOptions = {}) {
       assistantMessage.text = "模型未返回文本内容。";
     }
 
-    // 本轮消息发送成功后，清空已上传文件标签，避免影响下一轮输入。
-    state.uploadedFiles = [];
+    const isExpertAnalysis = state.chatMode === "expert" && (state.edaAnalysisEnabled || state.sqlAnalysisEnabled);
+
+    if (!isExpertAnalysis) {
+      state.uploadedFiles = [];
+    } else {
+      const match = assistantMessage.text.match(/`(.+?\.csv)`/);
+      if (match && match[1]) {
+        state.file_name = match[1].split('/').pop();
+      }
+    }
+
     syncModeUi();
   } catch (err) {
     assistantMessage.pending = false;
@@ -1370,7 +1450,28 @@ composerInput.addEventListener("keydown", (e) => {
 composerInput.addEventListener("input", autoResizeTextarea);
 
 // 新聊天按钮
-newChatBtn.addEventListener("click", createConversation);
+newChatBtn.addEventListener("click", async () => {
+  // 1. 先触发后端清理
+  try {
+    await fetch("/api/chat/cleanup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    });
+    console.log("清理后端文件成功");
+  } catch (e) {
+    console.error("清理后端文件失败", e);
+  }
+
+  // 2. 执行原有的新建对话逻辑
+  createConversation();
+
+  // 3. 额外清理前端状态
+  state.uploadedFiles = [];
+  state.file_name = "";
+  persistState();
+  renderAll();
+});
 
 // 清除所有聊天记录按钮
 const clearHistoryBtn = document.getElementById("clearHistoryBtn");

@@ -7,7 +7,7 @@ processors.py — Core data-processing classes.
   DataCleaningEngine    — NL-driven cleaning ops via LLM
   CustomEDAEngine       — bar / box / hist / scatter / regression / k-means
 """
-
+import re
 import json
 import traceback
 import pandas as pd

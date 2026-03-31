@@ -411,13 +411,23 @@ def node_save_csv(state: AgentState) -> AgentState:
     last     = next((m.content for m in reversed(state["messages"]) if isinstance(m, HumanMessage)), "")
     out_path = _parse_save_path(last, default=f"{state.get('table_name', 'dataset')}_cleaned.csv")
 
+    save_dir = "backend/dataset"
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    pure_filename = os.path.basename(out_path)
+    internal_sql_path = os.path.join(save_dir, pure_filename)
+
     try:
         df.to_csv(out_path, index=False)
-        log.info("[node_save_csv] Saved %d rows to %s", len(df), out_path)
+        if out_path != internal_sql_path:
+            df.to_csv(internal_sql_path, index=False)
+        log.info("[node_save_csv] Saved for user: %s | Saved for SQL: %s", out_path, internal_sql_path)
         return {**state, "step": "save_complete",
+                "file_name": pure_filename,
                 "messages": [AIMessage(content=(
                     f"✅ **Saved** cleaned dataset → `{out_path}`\n"
-                    f"{len(df):,} rows × {len(df.columns)} cols"
+                    f"{len(df):,} rows × {len(df.columns)} cols\n\n"
+                    f"You can click the button below to directly execute SQL queries on the table."
                 ))]}
     except Exception as e:
         log.error("[node_save_csv] Failed: %s", e)
@@ -512,7 +522,7 @@ def _build_chat_graph(checkpointer):
                             {"custom_eda": "custom_eda", "cleaning": "cleaning",
                              "rerun_eda": "rerun_eda", "save_csv": "save_csv", END: END})
     g.add_edge("custom_eda", END)
-    g.add_edge("cleaning",   END)
+    g.add_edge("cleaning",   "save_csv")
     g.add_edge("rerun_eda",  END)
     g.add_edge("save_csv",   END)
     return g.compile(checkpointer=checkpointer)

@@ -4,7 +4,7 @@
 - POST /api/chat/stream：流式返回助手回复
 - POST /api/chat/reset：清理指定会话历史
 """
-
+import os
 from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, Request
@@ -71,3 +71,34 @@ async def list_chat_providers(chat_service: ChatService = Depends(get_chat_servi
     """返回可选 provider 列表，便于前端做后端切换。"""
 
     return {"providers": chat_service.list_supported_providers()}
+
+@router.post("/cleanup")
+async def cleanup_session_files():
+    base_dir = os.getcwd()
+    dataset_dir = os.path.join(base_dir, "dataset")
+    if "backend" in os.listdir(base_dir):
+        dataset_dir = os.path.join(base_dir, "backend", "dataset")
+
+    print(f"--- [Cleanup] 正在执行全量清理: {dataset_dir} ---")
+
+    if not os.path.exists(dataset_dir):
+        return {"status": "ok", "message": "目录不存在"}
+
+    try:
+        count = 0
+        # 遍历目录下的所有内容
+        for filename in os.listdir(dataset_dir):
+            file_path = os.path.join(dataset_dir, filename)
+            try:
+                if os.path.isfile(file_path) or os.path.islink(file_path):
+                    os.unlink(file_path) # 删除文件或链接
+                    count += 1
+                elif os.path.isdir(file_path):
+                    shutil.rmtree(file_path) # 删除子目录
+                    count += 1
+            except Exception as e:
+                print(f"--- [Cleanup] 无法删除 {file_path}: {e} ---")
+
+        return {"status": "success", "deleted_count": count}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
