@@ -19,28 +19,32 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
-from state import AgentState
-from shared import log, _df_store, _to_serializable
-from processors import (
+from backend.data_analysis.state import AgentState
+from backend.data_analysis.shared import log, _df_store, _to_serializable
+from backend.data_analysis.processors import (
     DatasetUnderstanding,
     TypeInferencer,
     AutomatedEDA,
     DataCleaningEngine,
     CustomEDAEngine,
 )
-from html_report import render_eda_html
+from backend.data_analysis.html_report import render_eda_html
 from langchain_openai import ChatOpenAI
-
+from dotenv import load_dotenv
+# 优先使用项目 .env，避免被 shell 中旧变量污染导致鉴权失败。
+load_dotenv(override=True)
 
 # Uncomment this line if make it compulsory for user to provide API key, by default the API key will be set in env variable
 # llm: ChatOpenAI | None = None
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+llm = ChatOpenAI(model="deepseek-chat", temperature=0)
 
 def init_llm(api_key: str) -> None:
     """Initialise (or re-initialise) the LLM with the given OpenAI API key."""
     global llm
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, openai_api_key=api_key)
-    log.info("[init_llm] LLM ready (gpt-4o-mini)")
+    #加
+    api_key = os.getenv("OPENAI_API_KEY")
+    llm = ChatOpenAI(model="deepseek-chat", temperature=0, openai_api_key=api_key)
+    log.info("[init_llm] LLM ready (deepseek-chat)")
 
 def _require_llm():
     if llm is None:
@@ -350,6 +354,9 @@ def node_custom_eda(state: AgentState) -> AgentState:
     log.info("[node_custom_eda] Done: type=%s", result.get("type"))
     txt   = result.get("text_result", "")
     reply = f"✅ **{result['type'].replace('_',' ').title()}** complete." + (f"\n\n{txt}" if txt else "")
+    if result.get("plot_b64"):
+        img_md = f"\n\n![plot](data:image/png;base64,{result['plot_b64']})"
+    reply += img_md
     return {**state, "custom_result": result, "step": "custom_complete",
             "awaiting_human": False,
             "messages": [AIMessage(content=reply)]}
@@ -401,13 +408,23 @@ def node_save_csv(state: AgentState) -> AgentState:
     last     = next((m.content for m in reversed(state["messages"]) if isinstance(m, HumanMessage)), "")
     out_path = _parse_save_path(last, default=f"{state.get('table_name', 'dataset')}_cleaned.csv")
 
+    save_dir = "backend/dataset"
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    pure_filename = os.path.basename(out_path)
+    internal_sql_path = os.path.join(save_dir, pure_filename)
+
     try:
         df.to_csv(out_path, index=False)
-        log.info("[node_save_csv] Saved %d rows to %s", len(df), out_path)
+        if out_path != internal_sql_path:
+            df.to_csv(internal_sql_path, index=False)
+        log.info("[node_save_csv] Saved for user: %s | Saved for SQL: %s", out_path, internal_sql_path)
         return {**state, "step": "save_complete",
+                "file_name": pure_filename,
                 "messages": [AIMessage(content=(
                     f"✅ **Saved** cleaned dataset → `{out_path}`\n"
-                    f"{len(df):,} rows × {len(df.columns)} cols"
+                    f"{len(df):,} rows × {len(df.columns)} cols\n\n"
+                    f"You can click the button below to directly execute SQL queries on the table."
                 ))]}
     except Exception as e:
         log.error("[node_save_csv] Failed: %s", e)
@@ -498,7 +515,7 @@ def _build_chat_graph(checkpointer):
                             {"custom_eda": "custom_eda", "cleaning": "cleaning",
                              "rerun_eda": "rerun_eda", "save_csv": "save_csv", END: END})
     g.add_edge("custom_eda", END)
-    g.add_edge("cleaning",   END)
+    g.add_edge("cleaning",   "save_csv")
     g.add_edge("rerun_eda",  END)
     g.add_edge("save_csv",   END)
     return g.compile(checkpointer=checkpointer)
@@ -580,7 +597,7 @@ def run_chat(user_message: str, thread_id: str = "default") -> AgentState:
 
 if __name__ == "__main__":
     import sys
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatOpenAI(model="deepseek-chat", temperature=0)
     path = sys.argv[1] if len(sys.argv) > 1 else "Iris.csv"
     tid  = "cli-demo"
     print(f"\n▶ Running pipeline on: {path}\n")
