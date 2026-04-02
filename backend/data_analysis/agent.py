@@ -66,9 +66,6 @@ def _err(state: AgentState, msg: str, etype: str) -> AgentState:
             ))]}
 
 
-# ══════════════════════════════════════════════════════════════
-# NODES
-# ══════════════════════════════════════════════════════════════
 
 def node_load_dataset(state: AgentState) -> AgentState:
     fp = state.get("file_path", "")
@@ -434,10 +431,6 @@ def node_save_csv(state: AgentState) -> AgentState:
         return {**state, "messages": [AIMessage(content=f"⚠️ Save failed: {e}")]}
 
 
-# ══════════════════════════════════════════════════════════════
-# ROUTING
-# ══════════════════════════════════════════════════════════════
-
 def route_after_load(s):
     return "handle_human_decision" if s.get("awaiting_human") else "infer_types"
 
@@ -601,9 +594,6 @@ def run_chat(user_message: str, thread_id: str = "default") -> AgentState:
     return _chat_graph.invoke(new_state, config=config)
 
 
-# ══════════════════════════════════════════════════════════════
-# CLI DEMO
-# ══════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     import sys

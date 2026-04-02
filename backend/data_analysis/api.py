@@ -191,8 +191,6 @@ async def upload_and_analyze(
     }
 
 
-# ── State & Report ────────────────────────────────────────────
-
 @app.get("/state/{thread_id}", summary="Get session state snapshot")
 def get_state(thread_id: str):
     """Returns a JSON summary of the current session state."""
@@ -233,7 +231,6 @@ def get_chart(thread_id: str, chart_name: str):
     return {"chart_name": chart_name, "plot_b64": b64}
 
 
-# ── Chat ──────────────────────────────────────────────────────
 
 @app.post("/chat", summary="Send a chat message (cleaning / EDA / Q&A)")
 def chat(body: ChatRequest):
@@ -270,7 +267,6 @@ def chat(body: ChatRequest):
     return response
 
 
-# ── Human-in-the-loop ─────────────────────────────────────────
 
 @app.post("/human-response", summary="Respond to an error prompt")
 def human_response(body: HumanResponseRequest):
@@ -297,7 +293,6 @@ def human_response(body: HumanResponseRequest):
     }
 
 
-# ── Download CSV ──────────────────────────────────────────────
 
 @app.get("/download-csv/{thread_id}", summary="Download cleaned dataset as CSV")
 def download_csv(thread_id: str):
@@ -327,8 +322,6 @@ def download_csv(thread_id: str):
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
-
-# ── Health ────────────────────────────────────────────────────
 
 @app.get("/health", summary="Health check")
 def health():
