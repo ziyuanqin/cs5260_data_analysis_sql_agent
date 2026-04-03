@@ -7,3 +7,4 @@ dataset/
 backend/dataset/
 
 .env
+.DS_Store
