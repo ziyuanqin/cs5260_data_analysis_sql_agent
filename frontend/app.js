@@ -94,15 +94,15 @@ async function triggerGlobalCleanup() {
     // 如果有 UI 上的上传列表，记得同步
     if (typeof renderAll === "function") renderAll();
 
-    console.log("--- [Cleanup] 后端文件已清空 ---");
+    console.log("--- [Cleanup] backend files cleared ---");
   } catch (err) {
-    console.error("清理失败:", err);
+    console.error("Cleanup failed:", err);
   }
 }
 
 function getGeneralModelText() {
   const selected = GENERAL_MODELS.includes(state.generalModel) ? state.generalModel : "deepseek";
-  return `通用模式:${selected}`;
+  return `General Mode: ${selected}`;
 }
 
 function closeModelMenu() {
@@ -142,7 +142,7 @@ function ensureModelMenu() {
   menu.className = "model-menu";
   menu.hidden = true;
   menu.setAttribute("role", "menu");
-  menu.setAttribute("aria-label", "通用模式模型选择");
+  menu.setAttribute("aria-label", "General mode model selection");
 
   for (const modelId of GENERAL_MODELS) {
     const item = document.createElement("button");
@@ -202,13 +202,13 @@ function renderUploadedFiles() {
   uploadStatus.innerHTML = state.uploadedFiles
     .map(
       (item) =>
-        `<span class="upload-file-item">${escapeHtml(item.name)}<button class="upload-file-remove" data-file-id="${escapeHtml(item.id)}" type="button" aria-label="删除文件">✕</button></span>`
+        `<span class="upload-file-item">${escapeHtml(item.name)}<button class="upload-file-remove" data-file-id="${escapeHtml(item.id)}" type="button" aria-label="Remove file">✕</button></span>`
     )
     .join("");
 }
 
 function getModeGreetingText() {
-  return state.chatMode === "expert" ? "你好，我是专家模式" : "你好，我是通用模式";
+  return state.chatMode === "expert" ? "Hello, I'm Expert Mode" : "Hello, I'm General Mode";
 }
 
 function syncModeUi() {
@@ -229,7 +229,7 @@ function syncModeUi() {
   }
 
   if (modelSwitch) {
-    modelSwitch.textContent = isExpert ? "专家模式▾" : `${getGeneralModelText()}▾`;
+    modelSwitch.textContent = isExpert ? "Expert Mode▾" : `${getGeneralModelText()}▾`;
     modelSwitch.setAttribute("aria-expanded", String(Boolean(modelMenuEl && !modelMenuEl.hidden)));
   }
 
@@ -239,15 +239,15 @@ function syncModeUi() {
 
   if (taskChipBtn) {
     taskChipBtn.classList.toggle("active", isExpert);
-    taskChipBtn.textContent = isExpert ? "★ 专家模式" : "✶ 专家模式";
+    taskChipBtn.textContent = isExpert ? "★ Expert Mode" : "✶ Expert Mode";
     taskChipBtn.setAttribute("aria-pressed", String(isExpert));
-    taskChipBtn.title = isExpert ? "点击切回通用模式" : "点击切换到专家模式";
+    taskChipBtn.title = isExpert ? "Click to switch to General Mode" : "Click to switch to Expert Mode";
   }
 
   if (fileUploadBtn) {
     fileUploadBtn.classList.remove("active");
     fileUploadBtn.setAttribute("aria-pressed", "false");
-    fileUploadBtn.title = "点击上传文件";
+    fileUploadBtn.title = "Click to upload files";
   }
 
   renderUploadedFiles();
@@ -255,13 +255,13 @@ function syncModeUi() {
   if (sqlAnalysisToggleBtn) {
     sqlAnalysisToggleBtn.classList.toggle("active", state.sqlAnalysisEnabled);
     sqlAnalysisToggleBtn.setAttribute("aria-pressed", String(state.sqlAnalysisEnabled));
-    sqlAnalysisToggleBtn.title = state.sqlAnalysisEnabled ? "点击关闭SQL分析" : "点击开启SQL分析";
+    sqlAnalysisToggleBtn.title = state.sqlAnalysisEnabled ? "Click to disable SQL Analysis" : "Click to enable SQL Analysis";
   }
 
   if (edaAnalysisToggleBtn) {
     edaAnalysisToggleBtn.classList.toggle("active", state.edaAnalysisEnabled);
     edaAnalysisToggleBtn.setAttribute("aria-pressed", String(state.edaAnalysisEnabled));
-    edaAnalysisToggleBtn.title = state.edaAnalysisEnabled ? "点击关闭EDA分析" : "点击开启EDA分析";
+    edaAnalysisToggleBtn.title = state.edaAnalysisEnabled ? "Click to disable EDA Analysis" : "Click to enable EDA Analysis";
   }
 
   syncModelMenuSelection();
@@ -294,7 +294,7 @@ async function previewEdaReport(threadId) {
   const safeId = encodeURIComponent(threadId.trim());
   const resp = await fetch(`/api/eda/report/${safeId}`);
   if (!resp.ok) {
-    throw new Error(`报告获取失败：HTTP ${resp.status}`);
+    throw new Error(`Report fetch failed: HTTP ${resp.status}`);
   }
 
   const html = await resp.text();
@@ -318,7 +318,7 @@ function downloadEdaCsv(threadId) {
 function isLegacyWelcomeText(text) {
   if (typeof text !== "string") return false;
   const normalized = text.replaceAll("～", "~").trim();
-  return normalized === "你好~可以开始新对话了";
+  return normalized === "Hello~You can start a new conversation";
 }
 
 function escapeHtml(text) {
@@ -843,7 +843,7 @@ function restoreState() {
           title:
             typeof convo?.title === "string" && convo.title.trim()
               ? convo.title
-              : `新聊天 ${index + 1}`,
+              : `New Chat ${index + 1}`,
           createdAt: Number(convo?.createdAt || Date.now()),
           updatedAt: Number(convo?.updatedAt || Date.now()),
           messages,
@@ -879,7 +879,7 @@ function createConversation() {
   const id = createId();
   const convo = {
     id,
-    title: `新聊天 ${state.chatCounter}`,
+    title: `New Chat ${state.chatCounter}`,
     createdAt: Date.now(),
     updatedAt: Date.now(),
     messages: [],
@@ -1006,7 +1006,7 @@ function renderMessages() {
     bubble.className = "bubble";
     if (msg.role === "assistant" && msg.pending) {
       bubble.classList.add("thinking");
-      const pendingLabel = typeof msg.pendingLabel === "string" && msg.pendingLabel.trim() ? msg.pendingLabel.trim() : "分析中 🔍";
+      const pendingLabel = typeof msg.pendingLabel === "string" && msg.pendingLabel.trim() ? msg.pendingLabel.trim() : "In progress 🔍";
       bubble.innerHTML = `<span class="thinking-label">${escapeHtml(pendingLabel)}</span>`;
     } else if (msg.role === "assistant") {
       bubble.classList.add("rich");
@@ -1024,24 +1024,25 @@ function renderMessages() {
       const source = msg.edaMessageSource;
       const isUploadMessage = source === "upload";
       const isChatMessage = source === "chat";
+      const isEdaRefreshed = typeof msg.text === "string" && msg.text.toLowerCase().includes("eda refreshed");
 
-      if (isUploadMessage) {
+      if (isUploadMessage || isEdaRefreshed) {
         const previewBtn = document.createElement("button");
         previewBtn.className = "eda-report-btn";
         previewBtn.type = "button";
-        previewBtn.textContent = "预览EDA报告";
+        previewBtn.textContent = "Preview EDA report";
         previewBtn.addEventListener("click", async () => {
           try {
             await previewEdaReport(msg.edaReportThreadId);
           } catch (err) {
-            appendAssistantSystemMessage(`EDA报告预览失败：${err?.message || "未知错误"}`);
+            appendAssistantSystemMessage(`EDA report preview failed: ${err?.message || "unknown error"}`);
           }
         });
 
         const downloadBtn = document.createElement("button");
         downloadBtn.className = "eda-report-btn";
         downloadBtn.type = "button";
-        downloadBtn.textContent = "下载EDA报告";
+        downloadBtn.textContent = "Download EDA report";
         downloadBtn.addEventListener("click", () => {
           downloadEdaReport(msg.edaReportThreadId);
         });
@@ -1290,7 +1291,7 @@ async function streamAssistantReply(conversationId, assistantMessage, userText, 
   });
 
   if (!resp.ok || !resp.body) {
-    throw new Error(`请求失败：HTTP ${resp.status}`);
+    throw new Error(`Request failed: HTTP ${resp.status}`);
   }
 
   const reader = resp.body.getReader();
@@ -1385,7 +1386,7 @@ async function submitMessage(text, options = {}, uiOptions = {}) {
   convo.updatedAt = Date.now();
 
   // 如果还是默认标题，用第一条用户消息更新标题
-  if (!hideUserMessage && /^新聊天\s\d+$/.test(convo.title)) {
+if (!hideUserMessage && /^New Chat\s\d+$/.test(convo.title)) {
     convo.title = shortTitle(text);
   }
 
@@ -1418,7 +1419,7 @@ async function submitMessage(text, options = {}, uiOptions = {}) {
     syncModeUi();
   } catch (err) {
     assistantMessage.pending = false;
-    assistantMessage.text = `请求失败：${err?.message || "未知错误"}`;
+    assistantMessage.text = `Request failed: ${err?.message || "Unknown error"}`;
   } finally {
     convo.updatedAt = Date.now();
     state.conversations.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -1458,9 +1459,9 @@ newChatBtn.addEventListener("click", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({})
     });
-    console.log("清理后端文件成功");
+    console.log("Backend file cleanup succeeded");
   } catch (e) {
-    console.error("清理后端文件失败", e);
+    console.error("Backend file cleanup failed", e);
   }
 
   // 2. 执行原有的新建对话逻辑
@@ -1503,21 +1504,26 @@ taskChipBtn?.addEventListener("click", () => {
     state.edaAnalysisEnabled = false;
     state.sqlAnalysisEnabled = false;
   }
-  syncModeUi();
+  renderAll();
   persistState();
 });
 
 edaAnalysisToggleBtn?.addEventListener("click", () => {
   if (state.chatMode !== "expert") {
-    alert("请先开启『专家模式』后再使用 EDA 分析功能。");
+    alert("Please enable Expert Mode before using EDA Analysis.");
     return;
   }
   state.edaAnalysisEnabled = !state.edaAnalysisEnabled;
-  syncModeUi();
+  renderAll();
   persistState();
 });
 
 fileUploadBtn?.addEventListener("click", () => {
+  const canUpload = state.chatMode === "expert" && (state.edaAnalysisEnabled || state.sqlAnalysisEnabled);
+  if (!canUpload) {
+    alert("Please enable EDA or SQL analysis first before uploading files.");
+    return;
+  }
   fileUploadInput?.click();
 });
 
@@ -1537,7 +1543,7 @@ fileUploadInput?.addEventListener("change", async () => {
     if (!Array.isArray(activeConvo.messages)) {
       activeConvo.messages = [];
     }
-    edaPendingMessage = { role: "assistant", text: "", pending: true, pendingLabel: "EDA分析中 🔍" };
+    edaPendingMessage = { role: "assistant", text: "", pending: true, pendingLabel: "EDA analysis in progress 🔍" };
     activeConvo.messages.push(edaPendingMessage);
     activeConvo.updatedAt = Date.now();
     state.conversations.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -1571,7 +1577,7 @@ fileUploadInput?.addEventListener("change", async () => {
         body: formData,
       });
 
-      if (!resp.ok) throw new Error("上传失败");
+      if (!resp.ok) throw new Error("Upload failed");
 
       const result = await resp.json();
       const returnedName = typeof result?.file_name === "string" && result.file_name ? result.file_name : file.name;
@@ -1592,13 +1598,13 @@ fileUploadInput?.addEventListener("change", async () => {
         if (messageText) {
           uploadEdaSummaries.push(`【${returnedName}】\n${messageText}`);
         } else {
-          uploadEdaFailures.push(`【${returnedName}】upload解析失败，请重试。`);
+          uploadEdaFailures.push(`【${returnedName}】Upload parsing failed, please try again.`);
         }
       }
     } catch (err) {
-      console.error("上传失败:", err);
+      console.error("Upload failed:", err);
       if (useEdaUpload) {
-        uploadEdaFailures.push(`【${file.name}】upload失败，请重试。`);
+        uploadEdaFailures.push(`【${file.name}】Upload failed, please try again.`);
       }
     }
   }
@@ -1655,14 +1661,14 @@ uploadStatus?.addEventListener("click", (e) => {
 
 sqlAnalysisToggleBtn?.addEventListener("click", () => {
   if (state.chatMode !== "expert") {
-    alert("请先开启『专家模式』后再使用 SQL 分析功能。");
+    alert("Please enable Expert Mode before using SQL Analysis.");
     return;
   }
   state.sqlAnalysisEnabled = !state.sqlAnalysisEnabled;
   if (state.sqlAnalysisEnabled) {
     state.edaAnalysisEnabled = false;
   }
-  syncModeUi();
+  renderAll();
   persistState();
 });
 
