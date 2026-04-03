@@ -35,16 +35,33 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 # Uncomment this line if make it compulsory for user to provide API key, by default the API key will be set in env variable
-# llm: ChatOpenAI | None = None
-llm = ChatOpenAI(model="deepseek-chat", temperature=0)
-
-def init_llm(api_key: str) -> None:
-    """Initialise (or re-initialise) the LLM with the given OpenAI API key."""
+llm = None
+# llm = ChatOpenAI(model="deepseek-chat", temperature=0)
+def init_llm() -> None:
     global llm
-    #加
-    api_key = os.getenv("OPENAI_API_KEY")
-    llm = ChatOpenAI(model="deepseek-chat", temperature=0, openai_api_key=api_key)
-    log.info("[init_llm] LLM ready (deepseek-chat)")
+
+    openai_key = os.getenv("OPENAI_API_KEY")
+    deepseek_key = os.getenv("DEEPSEEK_API_KEY")
+    if openai_key:
+        llm = ChatOpenAI(
+            model="gpt-4o-mini",
+            temperature=0,
+            openai_api_key=openai_key
+        )
+        log.info("[init_llm] Using OpenAI (gpt-4o-mini)")
+    elif deepseek_key:
+        llm = ChatOpenAI(
+            model="deepseek-chat",
+            temperature=0,
+            openai_api_key=deepseek_key,
+            openai_api_base="https://api.deepseek.com/v1"
+        )
+        log.info("[init_llm] Using DeepSeek (deepseek-chat)")
+    else:
+        log.error("[init_llm] No API keys found in .env!")
+        raise ValueError("Neither OPENAI_API_KEY nor DEEPSEEK_API_KEY is set.")
+
+    return llm
 
 def _require_llm():
     if llm is None:
@@ -172,7 +189,10 @@ def node_run_eda(state: AgentState) -> AgentState:
                     f"{ov['total_missing']} missing | "
                     f"{eda_report['data_quality']['issue_count']} quality issues | "
                     f"{len(eda_report['correlations'].get('high_correlations', []))} high correlations\n\n"
-                    "Now you can clean the data or ask questions."
+                    "Next steps:\n"
+                    "  1. Clean the dataset: description: perform missing value handling, duplicate removal, type conversion, and outlier filtering; examples: `drop duplicates`, `fill NaN`, `convert column to numeric`.\n"
+                    "  2. Custom EDA: description: run focused analysis (distribution, correlation, grouping, visualization); examples: `show histogram of Age`, `correlation of Sales and Profit`, `group by Country summaries`.\n"
+                    "  3. Regenerate EDA report anytime with `rerun eda`."
                 ))]}
     except Exception as e:
         log.exception("[node_run_eda] Failed")
@@ -389,7 +409,11 @@ def node_rerun_eda(state: AgentState) -> AgentState:
                     f"{ov['rows']:,} rows × {ov['columns']} cols | "
                     f"{ov['total_missing']} missing | "
                     f"{eda_report['data_quality']['issue_count']} quality issues | "
-                    f"{len(eda_report['correlations'].get('high_correlations', []))} high correlations"
+                    f"{len(eda_report['correlations'].get('high_correlations', []))} high correlations\n\n"
+                    "Next steps:\n"
+                    "  1. Clean the dataset: description: perform missing value handling, duplicate removal, type conversion, and outlier handling; examples: `drop duplicates`, `fill NaN`, `change dtype`.\n"
+                    "  2. Custom EDA: description: run focused analysis (distribution, relationship, aggregation, visualization); examples: `scatter plot of A vs B`, `group by category mean`, `correlation heatmap`.\n"
+                    "  3. Regenerate EDA report with `rerun eda` after clean steps."
                 ))]}
     except Exception as e:
         log.exception("[node_rerun_eda] Failed")

@@ -12,6 +12,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from sqlalchemy import create_engine, inspect
 from dotenv import load_dotenv
 from backend.SQLagent.registry import DOMAIN_REGISTRY
+from backend.data_analysis.agent import init_llm
 
 # 优先使用项目 .env，避免被 shell 中旧变量污染导致鉴权失败。
 load_dotenv(override=True)
@@ -33,8 +34,10 @@ class AgentState(TypedDict):
 # 2. 定义节点逻辑
 class SQLExpert:
     def __init__(self):
-        # 使用具备长上下文理解能力的模型
-        self.llm = ChatOpenAI(model="deepseek-chat", temperature=0)
+        # 初始化 LLM 并保存返回值
+        self.llm = init_llm()
+        if self.llm is None:
+            raise RuntimeError("SQLExpert initialization failed: init_llm returned None")
 
         # 5大核心领域指标知识库
         self.domain_registry = DOMAIN_REGISTRY
