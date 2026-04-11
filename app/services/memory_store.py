@@ -69,6 +69,15 @@ class MemoryStore:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS session_summaries (
+                    session_id TEXT PRIMARY KEY,
+                    summary_text TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS evidence_items (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL,
@@ -151,6 +160,37 @@ class MemoryStore:
             "cost_budget_usd": float(row[3]),
         }
 
+    def upsert_summary(self, session_id: str, summary_text: str) -> None:
+        if not session_id:
+            return
+        cleaned = str(summary_text or "").strip()
+        with self._lock, self._connect() as conn:
+            if not cleaned:
+                conn.execute("DELETE FROM session_summaries WHERE session_id = ?", (session_id,))
+                return
+            conn.execute(
+                """
+                INSERT INTO session_summaries (session_id, summary_text, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    summary_text=excluded.summary_text,
+                    updated_at=excluded.updated_at
+                """,
+                (session_id, cleaned, int(time.time())),
+            )
+
+    def load_summary(self, session_id: str) -> str:
+        if not session_id:
+            return ""
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT summary_text FROM session_summaries WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        if not row:
+            return ""
+        return str(row[0] or "").strip()
+
     def append_task_event(self, session_id: str, event: dict[str, Any]) -> None:
         if not session_id:
             return
@@ -183,7 +223,32 @@ class MemoryStore:
             conn.execute("DELETE FROM session_messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM session_usage WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM task_events WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM session_summaries WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM evidence_items WHERE session_id = ?", (session_id,))
+
+    def replace_messages(self, session_id: str, messages: list[dict[str, str]]) -> None:
+        """Replace all persisted messages for one session."""
+        if not session_id:
+            return
+
+        normalized: list[tuple[str, str]] = []
+        for item in messages or []:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "").strip()
+            content = str(item.get("content") or "").strip()
+            if role not in {"user", "assistant"} or not content:
+                continue
+            normalized.append((role, content))
+
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM session_messages WHERE session_id = ?", (session_id,))
+            now = int(time.time())
+            for role, content in normalized:
+                conn.execute(
+                    "INSERT INTO session_messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+                    (session_id, role, content, now),
+                )
 
     def append_evidence(self, session_id: str, item: dict[str, Any]) -> None:
         if not session_id:

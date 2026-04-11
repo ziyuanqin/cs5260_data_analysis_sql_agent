@@ -54,7 +54,7 @@ class FakeRegistry:
         return self._provider
 
     def list_supported(self):
-        return ["openai_compatible", "local_http", "huggingface"]
+        return ["openai_compatible", "deepseek_compatible", "local_http", "huggingface"]
 
 
 def make_config(**overrides) -> AppConfig:
@@ -64,6 +64,8 @@ def make_config(**overrides) -> AppConfig:
         "openai_api_base_url": "https://example.com/v1",
         "openai_api_key": "openai-key",
         "openai_model_name": "gpt-4o-mini",
+        "deepseek_api_base_url": "https://api.deepseek.com/v1",
+        "deepseek_api_key": "deepseek-key",
         "huggingface_api_url": "https://router.huggingface.co/v1/chat/completions",
         "huggingface_api_key": "hf-token",
         "huggingface_model_name": "Qwen/Qwen3.5-9B:together",
@@ -80,7 +82,7 @@ def make_config(**overrides) -> AppConfig:
         "agent_summarizer_model_name": "gpt-4o-mini",
         "agent_max_review_retries": 1,
         "fallback_model_name": "gpt-4o-mini",
-        "session_token_budget": 3000,
+        "session_token_budget": 32000,
         "session_cost_budget_usd": 1.0,
         "default_price_per_1k_tokens_usd": 0.001,
         "model_price_per_1k_tokens_usd": {
@@ -93,6 +95,9 @@ def make_config(**overrides) -> AppConfig:
         "planning_short_direct_chars": 20,
         "request_timeout": 30,
         "history_max_messages": 20,
+        "memory_auto_compress_enabled": True,
+        "memory_keep_recent_messages": 12,
+        "memory_summary_max_chars": 3000,
         "frontend_dir": temp_frontend_dir,
     }
     values.update(overrides)
@@ -107,6 +112,49 @@ async def collect_events(service: ChatService, **kwargs):
 
 
 class ChatServiceTests(unittest.TestCase):
+    def test_memory_auto_compress_creates_summary(self):
+        service = ChatService(
+            make_config(
+                history_max_messages=6,
+                memory_auto_compress_enabled=True,
+                memory_keep_recent_messages=4,
+                memory_summary_max_chars=1200,
+            )
+        )
+        for idx in range(8):
+            service._append_session_message("s-memory", "user", f"用户消息 {idx}")
+            service._append_session_message("s-memory", "assistant", f"助手回复 {idx}")
+
+        self.assertLessEqual(len(service._sessions.get("s-memory", [])), 4)
+        summary = service._session_summaries.get("s-memory", "")
+        self.assertTrue(summary)
+        self.assertIn("用户消息", summary)
+
+        built = service._build_messages("s-memory", "general")
+        self.assertTrue(any("Conversation memory summary" in str(item.get("content")) for item in built))
+
+    def test_rewrite_last_user_turn_keeps_previous_context(self):
+        service = ChatService(make_config())
+        service._append_session_message("s-edit", "user", "第一轮问题")
+        service._append_session_message("s-edit", "assistant", "第一轮回答")
+        service._append_session_message("s-edit", "user", "第二轮问题")
+        service._append_session_message("s-edit", "assistant", "第二轮回答")
+
+        result = service.rewrite_last_user_turn("s-edit")
+
+        self.assertEqual(result["rewritten"], True)
+        self.assertEqual(result["removed_messages"], 2)
+        session_messages = service._sessions.get("s-edit", [])
+        self.assertEqual(len(session_messages), 2)
+        self.assertEqual(session_messages[-1]["role"], "assistant")
+        self.assertEqual(session_messages[-1]["content"], "第一轮回答")
+
+        # Rehydrate to confirm SQLite memory was updated as well.
+        service_2 = ChatService(make_config(frontend_dir=service.config.frontend_dir))
+        service_2._hydrate_session("s-edit")
+        hydrated = service_2._sessions.get("s-edit", [])
+        self.assertEqual(len(hydrated), 2)
+
     def test_general_mode_direct_returns_final(self):
         def responder(_messages, _model, _options):
             return "你好，已收到。"
@@ -128,6 +176,34 @@ class ChatServiceTests(unittest.TestCase):
         self.assertTrue(any(event.get("event") == "token" for event in events))
         self.assertEqual(events[-1]["event"], "final")
         self.assertEqual(events[-1]["payload"]["text"], "你好，已收到。")
+
+    def test_general_direct_retries_on_premature_stream_end(self):
+        calls = {"count": 0}
+
+        def responder(_messages, _model, _options):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                return RuntimeError("Response ended prematurely")
+            return "第二次成功"
+
+        service = ChatService(make_config())
+        fake_provider = FakeProvider(responder)
+        service.provider_registry = FakeRegistry(fake_provider)
+
+        events = asyncio.run(
+            collect_events(
+                service,
+                session_id="s-retry-premature-end",
+                mode="general",
+                user_message="你好",
+                provider="openai_compatible",
+                provider_options={"general_model": "openai"},
+            )
+        )
+
+        self.assertEqual(events[-1]["event"], "final")
+        self.assertEqual(events[-1]["payload"]["text"], "第二次成功")
+        self.assertGreaterEqual(calls["count"], 2)
 
     @unittest.skipUnless(HAS_LANGGRAPH, "langgraph is required for plan-loop tests")
     def test_general_mode_plan_loop_emits_stage_status(self):
@@ -170,8 +246,95 @@ class ChatServiceTests(unittest.TestCase):
         self.assertIn("planner", stage_names)
         self.assertIn("executor", stage_names)
         self.assertIn("reviewer", stage_names)
+        planner_status = next(
+            event
+            for event in stage_events
+            if event["payload"]["meta"].get("stage") == "planner"
+        )
+        self.assertIn("task_items", planner_status["payload"]["meta"])
+        progress_events = [
+            event
+            for event in events
+            if event.get("event") == "token"
+            and isinstance(event.get("payload", {}).get("meta"), dict)
+            and event.get("payload", {}).get("meta", {}).get("kind") == "progress"
+        ]
+        self.assertTrue(progress_events)
         self.assertEqual(events[-1]["event"], "final")
         self.assertEqual(events[-1]["payload"]["text"], "最终总结")
+
+    @unittest.skipUnless(HAS_LANGGRAPH, "langgraph is required for capability routing tests")
+    def test_general_mode_website_capability_forces_plan(self):
+        def responder(messages, _model, _options):
+            prompt = messages[-1]["content"]
+            if "Execute this step" in prompt:
+                return "步骤执行完成"
+            if "Reply exactly in one line" in prompt:
+                return "PASS"
+            if "Create the final user-facing answer" in prompt:
+                return "网站交付完成"
+            return "OK"
+
+        service = ChatService(make_config())
+        service.provider_registry = FakeRegistry(FakeProvider(responder))
+
+        events = asyncio.run(
+            collect_events(
+                service,
+                session_id="s-website-cap",
+                mode="general",
+                user_message="请帮我生成一个项目介绍网站并可下载",
+                provider="openai_compatible",
+                provider_options={"general_model": "openai"},
+            )
+        )
+
+        router_status = next(
+            event
+            for event in events
+            if event.get("event") == "token"
+            and event.get("payload", {}).get("meta", {}).get("stage") == "router"
+        )
+        self.assertIn("capability_website_builder", router_status["payload"].get("delta", ""))
+        self.assertTrue(router_status["payload"]["meta"].get("task_items"))
+        self.assertEqual(events[-1]["event"], "final")
+        self.assertEqual(events[-1]["payload"].get("capability"), "website_builder")
+
+    @unittest.skipUnless(HAS_LANGGRAPH, "langgraph is required for capability routing tests")
+    def test_general_mode_manual_capability_overrides_keyword_detection(self):
+        def responder(messages, _model, _options):
+            prompt = messages[-1]["content"]
+            if "Execute this step" in prompt:
+                return "步骤执行完成"
+            if "Reply exactly in one line" in prompt:
+                return "PASS"
+            if "Create the final user-facing answer" in prompt:
+                return "幻灯片交付完成"
+            return "OK"
+
+        service = ChatService(make_config())
+        service.provider_registry = FakeRegistry(FakeProvider(responder))
+
+        events = asyncio.run(
+            collect_events(
+                service,
+                session_id="s-manual-capability",
+                mode="general",
+                user_message="请帮我做一个项目总结",
+                provider="openai_compatible",
+                provider_options={"general_model": "openai", "general_capability": "slide_builder"},
+            )
+        )
+
+        router_status = next(
+            event
+            for event in events
+            if event.get("event") == "token"
+            and event.get("payload", {}).get("meta", {}).get("stage") == "router"
+        )
+        self.assertIn("capability_slide_builder", router_status["payload"].get("delta", ""))
+        self.assertEqual(events[-1]["event"], "final")
+        self.assertEqual(events[-1]["payload"].get("capability"), "slide_builder")
 
     @unittest.skipUnless(HAS_LANGGRAPH, "langgraph is required for evidence tests")
     def test_general_mode_emits_evidence_for_tool(self):
@@ -201,7 +364,7 @@ class ChatServiceTests(unittest.TestCase):
                 mode="general",
                 user_message="请规划步骤并读取 README",
                 provider="openai_compatible",
-                provider_options={"general_model": "openai"},
+                provider_options={"general_model": "openai", "general_file_access": True},
             )
         )
 
@@ -215,6 +378,107 @@ class ChatServiceTests(unittest.TestCase):
         self.assertTrue(evidence_events)
         source = evidence_events[0]["payload"]["meta"]["item"].get("source", "")
         self.assertIn("README.md", source)
+
+    @unittest.skipUnless(HAS_LANGGRAPH, "langgraph is required for web-search evidence tests")
+    def test_general_mode_web_search_tool_emits_evidence(self):
+        def responder(messages, _model, _options):
+            prompt = messages[-1]["content"]
+            if "Return JSON array only" in prompt:
+                return '[{"task":"检索最新信息"}]'
+            if "You are an executor with optional tool usage" in prompt:
+                return '{"action":"TOOL","tool":"web_search","input":"latest llm benchmark","reason":"need up-to-date links"}'
+            if "Based on the executed tool result" in prompt:
+                return "已完成检索并总结"
+            if "Reply exactly in one line" in prompt:
+                return "PASS"
+            if "Create the final user-facing answer" in prompt:
+                return "最终总结"
+            if "router for a general assistant" in prompt:
+                return "PLAN"
+            return "OK"
+
+        service = ChatService(make_config())
+        service.provider_registry = FakeRegistry(FakeProvider(responder))
+        service._tool_web_search = lambda _query: "1. Example result | https://example.com"  # type: ignore[method-assign]
+
+        events = asyncio.run(
+            collect_events(
+                service,
+                session_id="s-web-search",
+                mode="general",
+                user_message="请规划并搜索最新资料",
+                provider="openai_compatible",
+                provider_options={"general_model": "openai", "general_web_search": True},
+            )
+        )
+
+        evidence_events = [
+            event
+            for event in events
+            if event.get("event") == "token"
+            and isinstance(event.get("payload", {}).get("meta"), dict)
+            and event.get("payload", {}).get("meta", {}).get("kind") == "evidence"
+        ]
+        self.assertTrue(evidence_events)
+        item = evidence_events[0]["payload"]["meta"]["item"]
+        self.assertEqual(item.get("tool"), "web_search")
+        self.assertIn("duckduckgo.com", str(item.get("source", "")))
+
+    @unittest.skipUnless(HAS_LANGGRAPH, "langgraph is required for tool-guardrail tests")
+    def test_general_mode_disables_file_tool_by_default(self):
+        def responder(messages, _model, _options):
+            prompt = messages[-1]["content"]
+            if "Return JSON array only" in prompt:
+                return '[{"task":"读取本地文件"}]'
+            if "You are an executor with optional tool usage" in prompt:
+                return '{"action":"TOOL","tool":"file_read","input":"requirements.txt","reason":"need context"}'
+            if "Reply exactly in one line" in prompt:
+                return "PASS"
+            if "Create the final user-facing answer" in prompt:
+                return "最终总结"
+            if "router for a general assistant" in prompt:
+                return "PLAN"
+            return "OK"
+
+        service = ChatService(make_config())
+        service.provider_registry = FakeRegistry(FakeProvider(responder))
+
+        events = asyncio.run(
+            collect_events(
+                service,
+                session_id="s-tool-guardrail",
+                mode="general",
+                user_message="请读取 requirements 文件",
+                provider="openai_compatible",
+                provider_options={"general_model": "openai"},
+            )
+        )
+
+        evidence_events = [
+            event
+            for event in events
+            if event.get("event") == "token"
+            and isinstance(event.get("payload", {}).get("meta"), dict)
+            and event.get("payload", {}).get("meta", {}).get("kind") == "evidence"
+        ]
+        self.assertFalse(evidence_events)
+        self.assertEqual(events[-1]["event"], "final")
+
+    def test_file_write_tool_rejects_path_escape(self):
+        service = ChatService(make_config())
+        with self.assertRaises(ValueError):
+            service._tool_file_write("s-write-guard", '{"path":"../hack.txt","content":"x"}')
+
+    def test_file_write_tool_writes_inside_artifact_workspace(self):
+        service = ChatService(make_config())
+        output = service._tool_file_write(
+            "s-write-ok",
+            '{"path":"deliverables/index.html","content":"<html><body>ok</body></html>","overwrite":true}',
+        )
+        parsed = service._extract_json_object(output)
+        self.assertTrue(parsed.get("ok"))
+        resolved = service.resolve_artifact_file("s-write-ok", "deliverables/index.html")
+        self.assertTrue(resolved.exists())
 
     def test_budget_guardrail_returns_error_event(self):
         def responder(_messages, _model, _options):
@@ -268,6 +532,68 @@ class ChatServiceTests(unittest.TestCase):
         )
         self.assertEqual(provider_name, "huggingface")
         self.assertEqual(model_name, "Qwen/Qwen3.5-9B:together")
+
+    def test_general_model_alias_routes_deepseek_provider_when_deepseek_key_exists(self):
+        service = ChatService(
+            make_config(
+                deepseek_api_base_url="https://api.deepseek.com/v1",
+                deepseek_api_key="deepseek-key",
+            )
+        )
+        provider_name, model_name = service._resolve_general_backend(
+            provider=None,
+            model=None,
+            provider_options={"general_model": "deepseek"},
+        )
+        self.assertEqual(provider_name, "deepseek_compatible")
+        self.assertEqual(model_name, "deepseek-chat")
+
+    @unittest.skipUnless(HAS_LANGGRAPH, "langgraph is required for plan-loop tests")
+    def test_general_alias_model_is_used_for_all_agent_stages(self):
+        selected_hf_model = "Qwen/Qwen3.5-9B:together"
+
+        def responder(messages, _model, _options):
+            prompt = messages[-1]["content"]
+            if "Return JSON array only" in prompt:
+                return '[{"task":"检查环境"},{"task":"整理结论"}]'
+            if "Execute this step" in prompt:
+                return "步骤执行完成"
+            if "Reply exactly in one line" in prompt:
+                return "PASS"
+            if "Create the final user-facing answer" in prompt:
+                return "最终总结"
+            if "router for a general assistant" in prompt:
+                return "PLAN"
+            return "OK"
+
+        fake_provider = FakeProvider(responder)
+        service = ChatService(
+            make_config(
+                default_provider="huggingface",
+                huggingface_model_name=selected_hf_model,
+                # Keep agent defaults as GPT to verify they do not override the selected alias model.
+                agent_intent_model_name="gpt-4o-mini",
+                agent_planner_model_name="gpt-4o-mini",
+                agent_executor_model_name="gpt-4o",
+                agent_reviewer_model_name="gpt-4o-mini",
+                agent_summarizer_model_name="gpt-4o-mini",
+            )
+        )
+        service.provider_registry = FakeRegistry(fake_provider)
+
+        asyncio.run(
+            collect_events(
+                service,
+                session_id="s-hf-lock",
+                mode="general",
+                user_message="请规划一个上线检查步骤",
+                provider=None,
+                provider_options={"general_model": "huggingface"},
+            )
+        )
+
+        used_models = {call["model"] for call in fake_provider.calls}
+        self.assertEqual(used_models, {selected_hf_model})
 
     def test_expert_sql_not_intercepted_by_general_router(self):
         service = ChatService(make_config())

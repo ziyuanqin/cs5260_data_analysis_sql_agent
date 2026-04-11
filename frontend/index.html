@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Agent UI Mock</title>
-    <link rel="stylesheet" href="./style.css?v=20260411c" />
+    <link rel="stylesheet" href="./style.css?v=20260412a" />
     <script>
       window.MathJax = {
         tex: {
@@ -89,6 +89,15 @@
                 <span>Task Status</span>
                 <div class="task-status-actions">
                   <div id="taskStatusUsage" class="task-status-usage"></div>
+                  <button id="taskRetryBtn" class="pane-toggle-btn" type="button" aria-label="Retry last request">
+                    Retry
+                  </button>
+                  <button id="taskStopBtn" class="pane-toggle-btn danger" type="button" aria-label="Stop generation">
+                    Stop
+                  </button>
+                  <button id="taskClearBtn" class="pane-toggle-btn" type="button" aria-label="Clear task status">
+                    Clear
+                  </button>
                   <button id="taskStatusToggleBtn" class="pane-toggle-btn" type="button" aria-label="Collapse task status">
                     Collapse
                   </button>
@@ -100,6 +109,9 @@
             <aside id="evidencePane" class="evidence-pane" hidden>
               <div class="evidence-title">
                 <span>Evidence</span>
+                <button id="evidenceToggleBtn" class="pane-toggle-btn" type="button" aria-label="Collapse evidence">
+                  Collapse
+                </button>
               </div>
               <div id="evidenceList" class="evidence-list"></div>
             </aside>
@@ -120,7 +132,15 @@
             <button class="circle-btn" type="button" aria-label="More">＋</button>
             <textarea id="composerInput" rows="1" placeholder="Ask anything"></textarea>
             <button id="sendBtn" class="circle-send" type="submit" aria-label="Send">➤</button>
+            <div id="generalCapabilityRow" class="capability-row" aria-label="General capabilities">
+              <span class="capability-label">General Actions</span>
+              <button id="websiteBuilderBtn" class="capability-chip" type="button">Website Builder</button>
+              <button id="slideBuilderBtn" class="capability-chip" type="button">Slide Builder</button>
+            </div>
             <div class="chip-row" aria-label="Feature switches">
+              <button id="webSearchToggleBtn" class="feature-chip" type="button">Web Search</button>
+              <button id="webReadToggleBtn" class="feature-chip" type="button">Web Read</button>
+              <button id="fileAccessToggleBtn" class="feature-chip" type="button">File Access</button>
               <button id="taskChipBtn" class="feature-chip" type="button">✶ Expert Mode</button>
               <button id="fileUploadBtn" class="feature-chip" type="button">Upload Files</button>
               <button id="edaAnalysisToggleBtn" class="feature-chip" type="button">EDA Analysis</button>
@@ -133,6 +153,27 @@
       </main>
     </div>
 
-    <script type="module" src="./app.js?v=20260411c"></script>
+    <div id="artifactPreviewModal" class="artifact-modal-overlay" hidden>
+      <div class="artifact-modal" role="dialog" aria-modal="true" aria-labelledby="artifactPreviewTitle">
+        <div class="artifact-modal-head">
+          <h3 id="artifactPreviewTitle" class="artifact-modal-title">Artifact Preview</h3>
+          <div class="artifact-modal-actions">
+            <button id="artifactPreviewDownloadBtn" class="artifact-modal-btn" type="button">Download</button>
+            <button id="artifactPreviewCloseBtn" class="artifact-modal-btn danger" type="button">Close</button>
+          </div>
+        </div>
+        <div class="artifact-modal-body">
+          <iframe
+            id="artifactPreviewFrameModal"
+            class="artifact-modal-frame"
+            sandbox="allow-scripts allow-forms"
+            hidden
+          ></iframe>
+          <pre id="artifactPreviewText" class="artifact-modal-text" hidden></pre>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="./app.js?v=20260412a"></script>
   </body>
 </html>

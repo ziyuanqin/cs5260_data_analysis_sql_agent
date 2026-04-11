@@ -20,6 +20,10 @@ class ProviderRegistry:
                 base_url=config.openai_api_base_url,
                 api_key=config.openai_api_key,
             ),
+            "deepseek_compatible": OpenAICompatibleProvider(
+                base_url=config.deepseek_api_base_url,
+                api_key=config.deepseek_api_key,
+            ),
             "local_http": LocalHTTPProvider(api_url=config.local_api_url),
         }
 

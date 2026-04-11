@@ -2,7 +2,7 @@
 // Keep session data stable across refresh/close to avoid cross-session file cleanup side effects.
 
 // 前端主控脚本：负责会话状态管理、消息渲染、SSE 流式接收。
-const STORAGE_KEY = "agent_ui_chat_sessions_v1";
+const STORAGE_KEY = "agent_ui_chat_sessions_v2";
 
 const messageList = document.getElementById("messageList");
 const historyList = document.getElementById("historyList");
@@ -15,13 +15,29 @@ const emptyTitle = document.getElementById("emptyTitle");
 const htmlPreviewPane = document.getElementById("htmlPreviewPane");
 const htmlPreviewFrame = document.getElementById("htmlPreviewFrame");
 const htmlPreviewCloseBtn = document.getElementById("htmlPreviewCloseBtn");
+const artifactPreviewModal = document.getElementById("artifactPreviewModal");
+const artifactPreviewTitle = document.getElementById("artifactPreviewTitle");
+const artifactPreviewFrameModal = document.getElementById("artifactPreviewFrameModal");
+const artifactPreviewText = document.getElementById("artifactPreviewText");
+const artifactPreviewCloseBtn = document.getElementById("artifactPreviewCloseBtn");
+const artifactPreviewDownloadBtn = document.getElementById("artifactPreviewDownloadBtn");
 const taskStatusPane = document.getElementById("taskStatusPane");
 const taskStatusList = document.getElementById("taskStatusList");
 const taskStatusUsage = document.getElementById("taskStatusUsage");
 const taskStatusToggleBtn = document.getElementById("taskStatusToggleBtn");
+const taskRetryBtn = document.getElementById("taskRetryBtn");
+const taskStopBtn = document.getElementById("taskStopBtn");
+const taskClearBtn = document.getElementById("taskClearBtn");
 const evidencePane = document.getElementById("evidencePane");
 const evidenceList = document.getElementById("evidenceList");
+const evidenceToggleBtn = document.getElementById("evidenceToggleBtn");
 const taskChipBtn = document.getElementById("taskChipBtn");
+const webSearchToggleBtn = document.getElementById("webSearchToggleBtn");
+const webReadToggleBtn = document.getElementById("webReadToggleBtn");
+const fileAccessToggleBtn = document.getElementById("fileAccessToggleBtn");
+const generalCapabilityRow = document.getElementById("generalCapabilityRow");
+const websiteBuilderBtn = document.getElementById("websiteBuilderBtn");
+const slideBuilderBtn = document.getElementById("slideBuilderBtn");
 const fileUploadBtn = document.getElementById("fileUploadBtn");
 const fileUploadInput = document.getElementById("fileUploadInput");
 const uploadStatus = document.getElementById("uploadStatus");
@@ -60,6 +76,8 @@ let lastHtmlPreviewContent = "";
 let currentHtmlPreviewSourceKey = "";
 let dismissedHtmlPreviewSourceKey = "";
 let mathTypesetTimer = null;
+let activeStreamAbortController = null;
+let activeArtifactPreview = null;
 
 const state = {
   // 所有会话（按最近更新时间排序显示在左侧历史栏）
@@ -73,10 +91,16 @@ const state = {
   // UI 模式：点击专家模式按钮后切换欢迎语。
   chatMode: "general",
   generalModel: "deepseek",
+  generalCapabilityPreset: "",
+  webSearchEnabled: false,
+  webReadEnabled: false,
+  fileAccessEnabled: false,
   uploadedFiles: [],
   edaAnalysisEnabled: false,
   sqlAnalysisEnabled: false,
   taskStatusCollapsed: false,
+  evidenceCollapsed: false,
+  isEditingLastUser: false,
 };
 
 let modelMenuEl = null;
@@ -260,6 +284,48 @@ function syncModeUi() {
     taskChipBtn.title = isExpert ? "Click to switch to General Mode" : "Click to switch to Expert Mode";
   }
 
+  if (webSearchToggleBtn) {
+    const isGeneral = !isExpert;
+    webSearchToggleBtn.style.display = isGeneral ? "inline-flex" : "none";
+    webSearchToggleBtn.classList.toggle("active", isGeneral && state.webSearchEnabled);
+    webSearchToggleBtn.setAttribute("aria-pressed", String(isGeneral && state.webSearchEnabled));
+    webSearchToggleBtn.title = state.webSearchEnabled ? "Click to disable Web Search" : "Click to enable Web Search";
+  }
+
+  if (generalCapabilityRow) {
+    generalCapabilityRow.style.display = isExpert ? "none" : "flex";
+  }
+
+  if (websiteBuilderBtn) {
+    const active = !isExpert && state.generalCapabilityPreset === "website_builder";
+    websiteBuilderBtn.classList.toggle("active", active);
+    websiteBuilderBtn.setAttribute("aria-pressed", String(active));
+    websiteBuilderBtn.title = active ? "Click to cancel Website Builder preset" : "Click to enable Website Builder preset";
+  }
+
+  if (slideBuilderBtn) {
+    const active = !isExpert && state.generalCapabilityPreset === "slide_builder";
+    slideBuilderBtn.classList.toggle("active", active);
+    slideBuilderBtn.setAttribute("aria-pressed", String(active));
+    slideBuilderBtn.title = active ? "Click to cancel Slide Builder preset" : "Click to enable Slide Builder preset";
+  }
+
+  if (webReadToggleBtn) {
+    const isGeneral = !isExpert;
+    webReadToggleBtn.style.display = isGeneral ? "inline-flex" : "none";
+    webReadToggleBtn.classList.toggle("active", isGeneral && state.webReadEnabled);
+    webReadToggleBtn.setAttribute("aria-pressed", String(isGeneral && state.webReadEnabled));
+    webReadToggleBtn.title = state.webReadEnabled ? "Click to disable Web Read" : "Click to enable Web Read";
+  }
+
+  if (fileAccessToggleBtn) {
+    const isGeneral = !isExpert;
+    fileAccessToggleBtn.style.display = isGeneral ? "inline-flex" : "none";
+    fileAccessToggleBtn.classList.toggle("active", isGeneral && state.fileAccessEnabled);
+    fileAccessToggleBtn.setAttribute("aria-pressed", String(isGeneral && state.fileAccessEnabled));
+    fileAccessToggleBtn.title = state.fileAccessEnabled ? "Click to disable File Access" : "Click to enable File Access";
+  }
+
   if (fileUploadBtn) {
     fileUploadBtn.classList.remove("active");
     fileUploadBtn.setAttribute("aria-pressed", "false");
@@ -297,11 +363,133 @@ function normalizeMessages(rawMessages) {
     .map((msg) => ({
       role: msg?.role === "user" ? "user" : "assistant",
       text: typeof msg?.text === "string" ? msg.text : "",
+      runtime: normalizeRuntimeState(msg?.runtime),
+      artifacts: normalizeArtifactItems(msg?.artifacts),
       edaReportThreadId: typeof msg?.edaReportThreadId === "string" ? msg.edaReportThreadId : null,
       edaMessageSource: msg?.edaMessageSource === "upload" || msg?.edaMessageSource === "chat" ? msg.edaMessageSource : null,
     }))
-    .filter((msg) => msg.text.trim().length > 0)
+    .filter((msg) => msg.text.trim().length > 0 || msg.artifacts.length > 0)
     .filter((msg) => !(msg.role === "assistant" && isLegacyWelcomeText(msg.text)));
+}
+
+function normalizeTaskItems(rawItems) {
+  if (!Array.isArray(rawItems)) return [];
+  return rawItems
+    .map((item, index) => {
+      const title = typeof item?.title === "string" ? item.title.trim() : "";
+      if (!title) return null;
+      const statusRaw = typeof item?.status === "string" ? item.status.toLowerCase() : "pending";
+      const status = statusRaw === "done" || statusRaw === "running" ? statusRaw : "pending";
+      const idx = Number.isFinite(Number(item?.index)) ? Number(item.index) : index;
+      return { index: idx, title, status };
+    })
+    .filter(Boolean);
+}
+
+function normalizeArtifactItems(rawItems) {
+  if (!Array.isArray(rawItems)) return [];
+  return rawItems
+    .map((item) => {
+      const relativePath = typeof item?.relative_path === "string" ? item.relative_path.trim() : "";
+      const fallbackName = typeof item?.name === "string" ? item.name.trim() : "";
+      const path = relativePath || fallbackName;
+      if (!path) return null;
+      return {
+        name: fallbackName || path.split("/").pop() || path,
+        relativePath: path,
+        sizeBytes: Number.isFinite(Number(item?.size_bytes)) ? Number(item.size_bytes) : 0,
+        previewable: Boolean(item?.previewable),
+      };
+    })
+    .filter(Boolean);
+}
+
+function condenseAssistantTextForArtifacts(text, artifacts) {
+  const raw = typeof text === "string" ? text : "";
+  if (!raw.trim() || !Array.isArray(artifacts) || artifacts.length === 0) {
+    return raw;
+  }
+  // When files are already generated, avoid dumping full source code in chat bubble.
+  const replaced = raw.replace(/```[\s\S]*?```/g, "（代码内容已保存为文件，请使用下方文件卡片进行预览或下载。）");
+  return replaced.replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function createRuntimeState() {
+  return {
+    capability: "",
+    stage: "",
+    progressLogs: [],
+    taskItems: [],
+    artifacts: [],
+  };
+}
+
+function normalizeRuntimeState(rawRuntime) {
+  if (!rawRuntime || typeof rawRuntime !== "object") return createRuntimeState();
+  const runtime = createRuntimeState();
+  runtime.capability = typeof rawRuntime.capability === "string" ? rawRuntime.capability : "";
+  runtime.stage = typeof rawRuntime.stage === "string" ? rawRuntime.stage : "";
+  runtime.progressLogs = Array.isArray(rawRuntime.progressLogs)
+    ? rawRuntime.progressLogs
+        .map((line) => (typeof line === "string" ? line.trim() : ""))
+        .filter((line) => line.length > 0)
+        .slice(-50)
+    : [];
+  runtime.taskItems = normalizeTaskItems(rawRuntime.taskItems);
+  runtime.artifacts = normalizeArtifactItems(rawRuntime.artifacts);
+  return runtime;
+}
+
+function normalizeLastRequest(rawLastRequest) {
+  if (!rawLastRequest || typeof rawLastRequest !== "object") return null;
+  const text = typeof rawLastRequest.text === "string" ? rawLastRequest.text.trim() : "";
+  if (!text) return null;
+
+  const providerOptions =
+    rawLastRequest.providerOptions && typeof rawLastRequest.providerOptions === "object"
+      ? { ...rawLastRequest.providerOptions }
+      : {};
+
+  return {
+    text,
+    providerOptions,
+    mode: rawLastRequest.mode === "expert" ? "expert" : "general",
+    generalModel: isValidGeneralModel(rawLastRequest.generalModel)
+      ? rawLastRequest.generalModel
+      : "deepseek",
+    timestamp: Number(rawLastRequest.timestamp || Date.now()),
+  };
+}
+
+function ensureConversationArtifacts(convo) {
+  if (!convo) return [];
+  if (!Array.isArray(convo.artifacts)) {
+    convo.artifacts = [];
+  }
+  return convo.artifacts;
+}
+
+function ensureMessageRuntime(message) {
+  if (!message || typeof message !== "object") return createRuntimeState();
+  if (!message.runtime || typeof message.runtime !== "object") {
+    message.runtime = createRuntimeState();
+  } else {
+    message.runtime = normalizeRuntimeState(message.runtime);
+  }
+  return message.runtime;
+}
+
+function upsertArtifactItem(list, incomingItem) {
+  const normalized = normalizeArtifactItems([incomingItem])[0];
+  if (!normalized) return list;
+  const target = Array.isArray(list) ? list : [];
+  const existingIndex = target.findIndex((item) => item.relativePath === normalized.relativePath);
+  if (existingIndex >= 0) {
+    target[existingIndex] = { ...target[existingIndex], ...normalized };
+  } else {
+    target.push(normalized);
+  }
+  return target;
 }
 
 async function previewEdaReport(threadId) {
@@ -329,6 +517,150 @@ function downloadEdaCsv(threadId) {
   if (typeof threadId !== "string" || !threadId.trim()) return;
   const safeId = encodeURIComponent(threadId.trim());
   window.open(`/api/eda/download-csv/${safeId}`, "_blank", "noopener");
+}
+
+function buildArtifactDownloadUrl(sessionId, artifactPath) {
+  const safeSession = encodeURIComponent(String(sessionId || "").trim());
+  const safeArtifact = String(artifactPath || "")
+    .trim()
+    .split("/")
+    .map((seg) => encodeURIComponent(seg))
+    .join("/");
+  return `/api/chat/artifacts/${safeSession}/download/${safeArtifact}`;
+}
+
+function closeArtifactPreviewModal() {
+  if (!artifactPreviewModal) return;
+  artifactPreviewModal.hidden = true;
+  document.body.classList.remove("modal-open");
+  if (artifactPreviewFrameModal) {
+    artifactPreviewFrameModal.srcdoc = "";
+    artifactPreviewFrameModal.hidden = true;
+  }
+  if (artifactPreviewText) {
+    artifactPreviewText.textContent = "";
+    artifactPreviewText.hidden = true;
+  }
+  activeArtifactPreview = null;
+}
+
+function showArtifactPreviewInModal({ sessionId, artifactPath, contentType, rawText }) {
+  if (!artifactPreviewModal || !artifactPreviewTitle || !artifactPreviewFrameModal || !artifactPreviewText) {
+    return;
+  }
+
+  const lowerPath = String(artifactPath || "").toLowerCase();
+  const content = typeof rawText === "string" ? rawText : "";
+  const likelyHtml =
+    String(contentType || "").includes("text/html") ||
+    lowerPath.endsWith(".html") ||
+    lowerPath.endsWith(".htm") ||
+    /<!doctype\s+html|<html[\s>]/i.test(content);
+
+  artifactPreviewTitle.textContent = artifactPath || "Artifact Preview";
+  artifactPreviewModal.hidden = false;
+  document.body.classList.add("modal-open");
+
+  if (likelyHtml) {
+    const normalized = normalizeHtmlForPreview(content) || wrapHtmlFragment(content);
+    artifactPreviewText.hidden = true;
+    artifactPreviewText.textContent = "";
+    artifactPreviewFrameModal.hidden = false;
+    artifactPreviewFrameModal.srcdoc = normalized;
+  } else {
+    artifactPreviewFrameModal.hidden = true;
+    artifactPreviewFrameModal.srcdoc = "";
+    artifactPreviewText.hidden = false;
+    artifactPreviewText.textContent = content;
+  }
+
+  activeArtifactPreview = {
+    sessionId: String(sessionId || ""),
+    artifactPath: String(artifactPath || ""),
+  };
+}
+
+async function previewArtifact(sessionId, artifactPath) {
+  const url = buildArtifactDownloadUrl(sessionId, artifactPath);
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    throw new Error(`Artifact preview failed: HTTP ${resp.status}`);
+  }
+  const contentType = (resp.headers.get("content-type") || "").toLowerCase();
+  const rawText = await resp.text();
+  showArtifactPreviewInModal({ sessionId, artifactPath, contentType, rawText });
+}
+
+function downloadArtifact(sessionId, artifactPath) {
+  const url = buildArtifactDownloadUrl(sessionId, artifactPath);
+  window.open(url, "_blank", "noopener");
+}
+
+async function refreshConversationArtifacts(conversationId, assistantMessage = null) {
+  const safeSession = encodeURIComponent(String(conversationId || "").trim());
+  if (!safeSession) return;
+  const resp = await fetch(`/api/chat/artifacts/${safeSession}`);
+  if (!resp.ok) return;
+  const payload = await resp.json();
+  const items = normalizeArtifactItems(payload?.items);
+  const convo = state.conversations.find((item) => item.id === conversationId);
+  if (convo) {
+    convo.artifacts = items;
+  }
+  if (assistantMessage) {
+    const runtime = ensureMessageRuntime(assistantMessage);
+    runtime.artifacts = items;
+    assistantMessage.artifacts = items;
+  }
+}
+
+async function handleArtifactActionClick(target) {
+  if (!(target instanceof HTMLElement)) return false;
+
+  const openBtn = target.closest("[data-artifact-open='1']");
+  if (openBtn) {
+    const sessionId = openBtn.getAttribute("data-session-id") || "";
+    const artifactPath = openBtn.getAttribute("data-artifact-path") || "";
+    if (!sessionId || !artifactPath) return true;
+    try {
+      await previewArtifact(sessionId, artifactPath);
+    } catch (err) {
+      appendAssistantSystemMessage(`Artifact preview failed: ${err?.message || "unknown error"}`);
+    }
+    return true;
+  }
+
+  const previewBtn = target.closest("[data-artifact-preview='1']");
+  if (previewBtn) {
+    const sessionId = previewBtn.getAttribute("data-session-id") || "";
+    const artifactPath = previewBtn.getAttribute("data-artifact-path") || "";
+    if (!sessionId || !artifactPath) return true;
+    try {
+      await previewArtifact(sessionId, artifactPath);
+    } catch (err) {
+      appendAssistantSystemMessage(`Artifact preview failed: ${err?.message || "unknown error"}`);
+    }
+    return true;
+  }
+
+  const downloadBtn = target.closest("[data-artifact-download='1']");
+  if (downloadBtn) {
+    const sessionId = downloadBtn.getAttribute("data-session-id") || "";
+    const artifactPath = downloadBtn.getAttribute("data-artifact-path") || "";
+    if (!sessionId || !artifactPath) return true;
+    downloadArtifact(sessionId, artifactPath);
+    return true;
+  }
+
+  const bundleBtn = target.closest("[data-artifact-bundle='1']");
+  if (bundleBtn) {
+    const sessionId = bundleBtn.getAttribute("data-session-id") || "";
+    if (!sessionId) return true;
+    window.open(`/api/chat/artifacts/${encodeURIComponent(sessionId)}/bundle`, "_blank", "noopener");
+    return true;
+  }
+
+  return false;
 }
 
 function isLegacyWelcomeText(text) {
@@ -662,6 +994,197 @@ function renderAssistantMessageHtml(text) {
   return parts.join("") || `<p>${escapeHtml(normalizedText)}</p>`;
 }
 
+function formatBytes(size) {
+  const value = Number(size || 0);
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function detectArtifactType(fileName) {
+  const lower = String(fileName || "").toLowerCase();
+  if (lower.endsWith(".html") || lower.endsWith(".htm")) return "Web";
+  if (lower.endsWith(".md") || lower.endsWith(".txt")) return "Doc";
+  if (lower.endsWith(".js") || lower.endsWith(".ts")) return "Script";
+  if (lower.endsWith(".css")) return "Style";
+  if (lower.endsWith(".json")) return "Data";
+  return "File";
+}
+
+function artifactGlyph(fileName) {
+  const lower = String(fileName || "").toLowerCase();
+  if (lower.endsWith(".html") || lower.endsWith(".htm")) return "HTML";
+  if (lower.endsWith(".md")) return "MD";
+  if (lower.endsWith(".css")) return "CSS";
+  if (lower.endsWith(".js")) return "JS";
+  if (lower.endsWith(".ts")) return "TS";
+  if (lower.endsWith(".json")) return "{}";
+  if (lower.endsWith(".txt")) return "TXT";
+  if (lower.endsWith(".csv")) return "CSV";
+  if (lower.endsWith(".zip")) return "ZIP";
+  return "FILE";
+}
+
+function artifactBaseName(filePath) {
+  const normalized = String(filePath || "").replaceAll("\\", "/");
+  const parts = normalized.split("/").filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : normalized;
+}
+
+function renderArtifactIconTile(sessionId, item, compact = false, showName = false) {
+  const relativePath = String(item?.relativePath || item?.name || "").trim();
+  if (!relativePath) return "";
+  const escapedSession = escapeHtml(sessionId);
+  const escapedPath = escapeHtml(relativePath);
+  const actionAttr = item?.previewable ? "data-artifact-open='1'" : "data-artifact-download='1'";
+  const actionText = item?.previewable ? "Preview" : "Download";
+  const title = escapeHtml(
+    `${actionText}: ${relativePath}\n${detectArtifactType(relativePath)} · ${formatBytes(item?.sizeBytes)}`
+  );
+  const compactClass = compact ? "compact" : "";
+  const buttonHtml = `
+    <button
+      class="artifact-icon-tile ${compactClass}"
+      type="button"
+      ${actionAttr}
+      data-session-id="${escapedSession}"
+      data-artifact-path="${escapedPath}"
+      title="${title}"
+      aria-label="${escapeHtml(`${actionText} ${relativePath}`)}"
+    >
+      <span class="artifact-icon-glyph">${escapeHtml(artifactGlyph(relativePath))}</span>
+    </button>
+  `;
+  if (!showName) return buttonHtml;
+  const name = escapeHtml(artifactBaseName(relativePath));
+  return `
+    <div class="artifact-file-card ${compactClass}">
+      ${buttonHtml}
+      <div class="artifact-file-name" title="${escapeHtml(relativePath)}">${name}</div>
+    </div>
+  `;
+}
+
+function renderRuntimeTaskItems(taskItems, isPending = false) {
+  if (!Array.isArray(taskItems) || taskItems.length === 0) return "";
+  const rows = taskItems
+    .map((item, idx) => {
+      const status = item.status || "pending";
+      const symbol = status === "done" ? "✓" : status === "running" ? "●" : "○";
+      const loadingClass = isPending && status === "running" ? "loading-scan" : "";
+      return `
+        <div class="runtime-task-item status-${escapeHtml(status)} ${loadingClass}">
+          <span class="runtime-task-index">${idx + 1}</span>
+          <span class="runtime-task-symbol">${symbol}</span>
+          <span class="runtime-task-title">${escapeHtml(item.title)}</span>
+        </div>
+      `;
+    })
+    .join("");
+  return `
+    <div class="runtime-task-wrap">
+      <div class="runtime-section-title">任务进度</div>
+      <div class="runtime-task-list">${rows}</div>
+    </div>
+  `;
+}
+
+function renderRuntimeArtifacts(conversationId, artifacts) {
+  if (!Array.isArray(artifacts) || artifacts.length === 0) return "";
+  const escapedSession = escapeHtml(conversationId);
+  const tiles = artifacts.map((item) => renderArtifactIconTile(conversationId, item, false, true)).join("");
+  return `
+    <div class="runtime-artifact-wrap">
+      <div class="runtime-artifact-top">
+        <div class="runtime-section-title">交付文件</div>
+        <button class="runtime-artifact-btn ghost" type="button" data-artifact-bundle="1" data-session-id="${escapedSession}">下载全部 ZIP</button>
+      </div>
+      <div class="artifact-icon-grid">${tiles}</div>
+    </div>
+  `;
+}
+
+function renderAssistantArtifactCards(conversationId, artifacts) {
+  if (!Array.isArray(artifacts) || artifacts.length === 0) return "";
+  const escapedSession = escapeHtml(conversationId);
+  const tiles = artifacts.map((item) => renderArtifactIconTile(conversationId, item, false, true)).join("");
+  return `
+    <section class="assistant-artifacts">
+      <div class="assistant-artifacts-head">
+        <span>交付文件</span>
+        <button class="runtime-artifact-btn ghost" type="button" data-artifact-bundle="1" data-session-id="${escapedSession}">下载全部 ZIP</button>
+      </div>
+      <div class="assistant-artifact-grid">${tiles}</div>
+    </section>
+  `;
+}
+
+function renderAgentRuntimeCard(runtime, conversationId, usage, isPending = false) {
+  const normalized = normalizeRuntimeState(runtime);
+  const hasLogs = normalized.progressLogs.length > 0;
+  const hasTaskItems = normalized.taskItems.length > 0;
+  const hasArtifacts = normalized.artifacts.length > 0;
+  const usageText = formatUsageText(usage);
+  if (!hasLogs && !hasTaskItems && !hasArtifacts) return "";
+
+  const stageText = normalized.stage ? formatStageLabel(normalized.stage) : "Agent Runtime";
+  const capabilityText = normalized.capability ? ` · ${normalized.capability}` : "";
+  const runningItem = normalized.taskItems.find((item) => item.status === "running");
+  const summaryText = runningItem
+    ? `正在执行：${runningItem.title}`
+    : normalized.taskItems.length > 0
+      ? "任务步骤已规划，持续执行中"
+      : "任务执行中";
+  const logLines = normalized.progressLogs.slice(-8);
+  const logs = hasLogs
+    ? logLines
+        .map((line, index) => {
+          const loadingClass = isPending && index === logLines.length - 1 ? "loading-scan" : "";
+          return `<div class="runtime-log-line ${loadingClass}">${escapeHtml(line)}</div>`;
+        })
+        .join("")
+    : `<div class="runtime-log-line muted">Running...</div>`;
+
+  return `
+    <section class="agent-runtime-card ${isPending ? "is-running" : ""}">
+      <div class="runtime-head">
+        <div class="runtime-brand">
+          <span class="runtime-brand-name">manus</span>
+          <span class="runtime-brand-lite">Lite</span>
+        </div>
+        ${usageText ? `<span class="runtime-usage">${escapeHtml(usageText)}</span>` : ""}
+      </div>
+      <div class="runtime-title">${escapeHtml(stageText + capabilityText)}</div>
+      <div class="runtime-summary ${isPending ? "loading-scan" : ""}">${escapeHtml(summaryText)}</div>
+      ${renderRuntimeTaskItems(normalized.taskItems, isPending)}
+      <div class="runtime-log-wrap">${logs}</div>
+      ${renderRuntimeArtifacts(conversationId, normalized.artifacts)}
+    </section>
+  `;
+}
+
+function buildPendingLabelFromMeta(meta) {
+  const stage = String(meta?.stage || "").toLowerCase();
+  const taskItems = normalizeTaskItems(meta?.task_items);
+  const runningItem = taskItems.find((item) => item.status === "running");
+  const stageMap = {
+    router: "路由中",
+    planner: "规划中",
+    executor: "执行中",
+    reviewer: "评审中",
+    summarizer: "汇总中",
+    tool: "工具处理中",
+    artifact: "文件生成中",
+    budget: "预算检查中",
+  };
+  const stageText = stageMap[stage] || "思考中";
+  if (runningItem && runningItem.title) {
+    return `思考中 · ${stageText}：${runningItem.title}`;
+  }
+  return `思考中 · ${stageText}`;
+}
+
 // 自动根据内容调整输入框高度
 function autoResizeTextarea() {
   composerInput.style.height = "38px";
@@ -679,6 +1202,31 @@ function getActiveConversation() {
   return state.conversations.find((c) => c.id === state.activeConversationId) || null;
 }
 
+function findLastUserMessageIndex(convo) {
+  if (!convo || !Array.isArray(convo.messages)) return -1;
+  for (let idx = convo.messages.length - 1; idx >= 0; idx -= 1) {
+    if (convo.messages[idx]?.role === "user") return idx;
+  }
+  return -1;
+}
+
+function cancelLastUserEditing() {
+  state.isEditingLastUser = false;
+}
+
+function beginLastUserEditing() {
+  if (state.isStreaming) return;
+  const convo = getActiveConversation();
+  const idx = findLastUserMessageIndex(convo);
+  if (!convo || idx < 0) return;
+  const message = convo.messages[idx];
+  state.isEditingLastUser = true;
+  composerInput.value = String(message?.text || "");
+  autoResizeTextarea();
+  composerInput.focus();
+  renderMessages();
+}
+
 function isConversationEmpty(convo) {
   if (!convo || !Array.isArray(convo.messages)) return true;
   return convo.messages.length === 0;
@@ -693,6 +1241,7 @@ function formatStageLabel(stage) {
     reviewer: "Reviewer",
     summarizer: "Summarizer",
     tool: "Tool",
+    artifact: "Artifact",
     budget: "Budget",
   };
   return map[normalized] || normalized || "Status";
@@ -702,16 +1251,170 @@ function normalizeStatusMessage(stage, message) {
   const raw = String(message || "").trim();
   if (!raw) return "";
   const cleaned = raw.replace(/^\[[^\]]+\]\s*/u, "").trim();
-  if (String(stage || "").toLowerCase() !== "router") {
+  const normalizedStage = String(stage || "").toLowerCase();
+
+  const tryParseJson = (text) => {
+    const candidate = String(text || "").trim();
+    if (!candidate || (!candidate.startsWith("{") && !candidate.startsWith("["))) return null;
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      return null;
+    }
+  };
+
+  const compactText = (text, maxChars = 240) => {
+    const normalized = String(text || "").replace(/\s+/g, " ").trim();
+    if (!normalized) return "";
+    return normalized.length > maxChars ? `${normalized.slice(0, maxChars)}...` : normalized;
+  };
+
+  const humanizeToolAction = (obj) => {
+    if (!obj || typeof obj !== "object") return "";
+    const action = String(obj.action || "").toUpperCase();
+    if (action !== "TOOL") return "";
+    const tool = String(obj.tool || "").trim().toLowerCase();
+    const input = obj.input;
+
+    if (tool === "file_write") {
+      const path = typeof input === "object" && input ? String(input.path || "").trim() : "";
+      return path ? `已写入文件：${path}` : "已调用文件写入工具";
+    }
+    if (tool === "file_read") {
+      const target = typeof input === "string" ? input.trim() : (typeof input === "object" && input ? String(input.path || input.file || "").trim() : "");
+      return target ? `已读取文件：${target}` : "已调用文件读取工具";
+    }
+    if (tool === "web_search") {
+      const query = typeof input === "string" ? input.trim() : "";
+      return query ? `已执行网页搜索：${query}` : "已执行网页搜索";
+    }
+    if (tool === "web_read") {
+      const url = typeof input === "string" ? input.trim() : "";
+      return url ? `已读取网页内容：${url}` : "已读取网页内容";
+    }
+    return tool ? `已调用工具：${tool}` : "";
+  };
+
+  if (normalizedStage === "router") {
+    const decisionMatch = cleaned.match(/decision=([A-Z]+)/i);
+    const reasonMatch = cleaned.match(/reason=([^\s,]+)/i);
+    const decision = decisionMatch ? decisionMatch[1].toUpperCase() : "";
+    const reason = reasonMatch ? reasonMatch[1] : "";
+    if (decision || reason) {
+      return `Decision ${decision || "UNKNOWN"}${reason ? ` | ${reason}` : ""}`;
+    }
     return cleaned;
   }
-  const decisionMatch = cleaned.match(/decision=([A-Z]+)/i);
-  const reasonMatch = cleaned.match(/reason=([^\s,]+)/i);
-  const decision = decisionMatch ? decisionMatch[1].toUpperCase() : "";
-  const reason = reasonMatch ? reasonMatch[1] : "";
-  if (decision || reason) {
-    return `Decision ${decision || "UNKNOWN"}${reason ? ` | ${reason}` : ""}`;
+
+  if (normalizedStage === "planner") {
+    const previewMatch = cleaned.match(/预览[:：]\s*([\s\S]+)$/u);
+    if (!previewMatch) return cleaned;
+    const beforePreview = cleaned.slice(0, previewMatch.index).trim().replace(/[；;:：]\s*$/, "");
+    const previewRaw = previewMatch[1] || "";
+    const items = previewRaw
+      .split("|")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const previewText = items.length ? items.map((item) => `- ${item}`).join("\n") : compactText(previewRaw, 400);
+    return [beforePreview, "任务预览：", previewText].filter(Boolean).join("\n");
   }
+
+  if (normalizedStage === "executor") {
+    const normalized = cleaned
+      .replace(/[|｜]/g, "\n")
+      .replace(/[；;]\s*(?=(?:步骤|当前步骤|执行结果|结果)[:：])/g, "\n");
+    const rawLines = normalized
+      .split(/\n+/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    let doneCount = "";
+    const stepCandidates = [];
+    const resultCandidates = [];
+
+    for (const line of rawLines) {
+      const plain = line.replace(/^\[[^\]]+\]\s*/u, "").trim();
+      const doneMatch = plain.match(/^已执行步骤[:：]\s*(\d+)/u);
+      if (doneMatch) {
+        doneCount = doneMatch[1];
+        continue;
+      }
+
+      const stepMatch = plain.match(/^(?:当前)?步骤[:：]\s*(.+)$/u);
+      if (stepMatch) {
+        stepCandidates.push(stepMatch[1].trim());
+        continue;
+      }
+
+      const resultMatch = plain.match(/^(?:执行)?结果[:：]\s*(.+)$/u);
+      if (resultMatch) {
+        resultCandidates.push(resultMatch[1].trim());
+        continue;
+      }
+
+      if (plain.startsWith("{") || plain.startsWith("[")) {
+        resultCandidates.push(plain);
+      }
+    }
+
+    const unique = (items) => {
+      const seen = new Set();
+      const out = [];
+      for (const item of items) {
+        const key = String(item || "").trim();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        out.push(key);
+      }
+      return out;
+    };
+
+    let steps = unique(stepCandidates);
+    const hasTextStep = steps.some((item) => !/^\d+$/.test(item));
+    if (hasTextStep) {
+      steps = steps.filter((item) => !/^\d+$/.test(item));
+    }
+
+    const humanResults = unique(
+      resultCandidates.map((rawResult) => {
+        const parsed = tryParseJson(rawResult);
+        if (parsed) {
+          const human = humanizeToolAction(parsed);
+          if (human) return human;
+        }
+        return rawResult;
+      })
+    );
+
+    const lines = [];
+    if (doneCount) lines.push(`已执行步骤：${doneCount}`);
+    if (steps.length > 0) lines.push(`当前步骤：${steps[0]}`);
+    if (humanResults.length > 0) lines.push(`执行结果：${humanResults[0]}`);
+    return lines.length ? lines.join("\n") : cleaned;
+  }
+
+  if (normalizedStage === "reviewer") {
+    const passFail = cleaned.match(/\b(PASS|FAIL)\b/i);
+    const retryMatch = cleaned.match(/retry[:=]\s*(\d+)/i);
+    const retryCount = retryMatch ? Number(retryMatch[1]) : null;
+    const cleanedNoRetry = cleaned.replace(/\(\s*retry[:=]\s*\d+\s*\)\s*$/i, "").trim();
+    if (passFail) {
+      const label = passFail[1].toUpperCase();
+      const detail = cleanedNoRetry && cleanedNoRetry.toUpperCase() !== label ? cleanedNoRetry : "";
+      if (label === "PASS") {
+        const base = detail || "评审通过：该步骤已满足目标";
+        return retryCount !== null ? `${base}（重试 ${retryCount} 次）` : base;
+      }
+      if (label === "FAIL") {
+        const base = detail || "评审未通过：该步骤需要修订";
+        return retryCount !== null ? `${base}（重试 ${retryCount} 次）` : base;
+      }
+    }
+    const reviewLabel = passFail ? passFail[1].toUpperCase() : "REVIEW";
+    const retryText = retryCount !== null ? `重试次数：${retryCount}` : "";
+    return [reviewLabel, retryText, cleanedNoRetry || cleaned].filter(Boolean).join(" | ");
+  }
+
   return cleaned;
 }
 
@@ -757,6 +1460,21 @@ function setTaskStatusCollapsed(collapsed, shouldPersist = true) {
   syncSidePaneLayout();
 }
 
+function setEvidenceCollapsed(collapsed, shouldPersist = true) {
+  state.evidenceCollapsed = Boolean(collapsed);
+  if (evidencePane) {
+    evidencePane.classList.toggle("collapsed", state.evidenceCollapsed);
+  }
+  if (evidenceToggleBtn) {
+    evidenceToggleBtn.textContent = state.evidenceCollapsed ? "Expand" : "Collapse";
+    evidenceToggleBtn.setAttribute("aria-expanded", String(!state.evidenceCollapsed));
+  }
+  if (shouldPersist) {
+    persistState();
+  }
+  syncSidePaneLayout();
+}
+
 function appendTaskStatusEvent(conversationId, payload) {
   const convo = state.conversations.find((c) => c.id === conversationId);
   if (!convo) return;
@@ -783,6 +1501,10 @@ function appendTaskStatusEvent(conversationId, payload) {
   if (convo.taskEvents.length > 200) {
     convo.taskEvents = convo.taskEvents.slice(-200);
   }
+  const taskItems = normalizeTaskItems(meta.task_items);
+  if (taskItems.length > 0) {
+    convo.taskItems = taskItems;
+  }
 
   convo.updatedAt = Date.now();
   persistState();
@@ -803,19 +1525,28 @@ function renderTaskStatusPanel() {
     taskStatusPane.hidden = true;
     taskStatusList.innerHTML = "";
     if (taskStatusUsage) taskStatusUsage.textContent = "";
+    updateTaskStatusActionButtons(false);
     syncSidePaneLayout();
     return;
   }
   const convo = getActiveConversation();
   const events = Array.isArray(convo?.taskEvents) ? convo.taskEvents : [];
+  const taskItems = normalizeTaskItems(convo?.taskItems);
+  const artifacts = normalizeArtifactItems(convo?.artifacts);
   const usage = convo?.usage || null;
-  const hasContent = events.length > 0 || Boolean(formatUsageText(usage));
+  const hasContent =
+    taskItems.length > 0 ||
+    artifacts.length > 0 ||
+    events.length > 0 ||
+    Boolean(formatUsageText(usage)) ||
+    state.isStreaming;
 
   taskStatusPane.hidden = !hasContent;
   if (!hasContent) {
     taskStatusList.innerHTML = "";
     if (taskStatusUsage) taskStatusUsage.textContent = "";
     setTaskStatusCollapsed(false, false);
+    updateTaskStatusActionButtons(false);
     syncSidePaneLayout();
     return;
   }
@@ -824,68 +1555,172 @@ function renderTaskStatusPanel() {
     taskStatusUsage.textContent = formatUsageText(usage);
   }
 
-  const latest = events[events.length - 1] || null;
-  let totalSteps = Number(latest?.totalSteps || 0);
-  if (!totalSteps) {
-    const withTotal = [...events].reverse().find((item) => Number(item.totalSteps) > 0);
-    totalSteps = Number(withTotal?.totalSteps || 0);
-  }
+  const latestEvent = events.length > 0 ? events[events.length - 1] : null;
+  const latestStage = String(latestEvent?.stage || "").toLowerCase();
+  const stageOrder = ["router", "planner", "executor", "reviewer", "summarizer"];
+  const stageSeen = new Set(events.map((item) => String(item?.stage || "").toLowerCase()));
+
+  const totalSteps = taskItems.length;
   let doneSteps = 0;
   for (const item of events) {
     if (String(item.stage || "").toLowerCase() === "executor") {
       doneSteps = Math.max(doneSteps, parseExecutorDoneCount(item.rawMessage || item.message));
     }
   }
+  if (!doneSteps) {
+    doneSteps = taskItems.filter((item) => item.status === "done").length;
+  }
   if (totalSteps > 0 && doneSteps > totalSteps) {
     doneSteps = totalSteps;
   }
-  const progressPct = totalSteps > 0 ? Math.max(0, Math.min(100, Math.round((doneSteps / totalSteps) * 100))) : 0;
-  const latestStage = formatStageLabel(latest?.stage || "status");
-  const summaryBlock = totalSteps
+  const runningIndex =
+    totalSteps > 0 && doneSteps < totalSteps && (latestStage === "executor" || latestStage === "reviewer")
+      ? doneSteps
+      : null;
+  const runningItem = runningIndex !== null ? taskItems[runningIndex] : null;
+  const progressPct = totalSteps > 0 ? Math.round((doneSteps / totalSteps) * 100) : 0;
+  const summaryLabel = runningItem
+    ? `Running: ${runningItem.title}`
+    : doneSteps === totalSteps && totalSteps > 0
+      ? "All tasks completed"
+      : latestStage
+        ? `${formatStageLabel(latestStage)} in progress`
+        : "Ready";
+
+  const stageFlow = `
+    <div class="task-stage-flow">
+      ${stageOrder
+        .map((stage) => {
+          const isActive = latestStage === stage;
+          const isDone = stageSeen.has(stage) && !isActive;
+          const cls = isActive ? "active" : isDone ? "done" : "pending";
+          const marker = isActive ? "●" : isDone ? "✓" : "○";
+          return `
+            <div class="task-stage-pill ${cls}">
+              <span class="task-stage-marker">${marker}</span>
+              <span>${formatStageLabel(stage)}</span>
+            </div>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+
+  const processEvents = events
+    .filter((item) => ["router", "planner", "executor", "reviewer", "summarizer"].includes(String(item.stage || "").toLowerCase()))
+    .slice(-4);
+  const processList = processEvents.length
+    ? `
+      <div class="task-process-list">
+        ${processEvents
+          .map((item) => {
+            const msg = String(item.message || "").trim();
+            return `
+              <div class="task-process-item stage-${escapeHtml(String(item.stage || "").toLowerCase())}">
+                <span class="task-process-stage">${escapeHtml(formatStageLabel(item.stage || ""))}</span>
+                <span class="task-process-text">${escapeHtml(msg)}</span>
+              </div>
+            `;
+          })
+          .join("")}
+      </div>
+    `
+    : "";
+
+  const summaryBlock = totalSteps > 0
     ? `
       <div class="task-status-summary">
         <div class="task-summary-top">
-          <span>Current Stage: <strong>${escapeHtml(latestStage)}</strong></span>
+          <span><strong>${escapeHtml(summaryLabel)}</strong></span>
           <span>${doneSteps}/${totalSteps} steps</span>
         </div>
+        ${stageFlow}
         <div class="task-progress-track">
           <div class="task-progress-fill" style="width: ${progressPct}%"></div>
+        </div>
+        ${processList}
+      </div>
+    `
+    : state.isStreaming
+      ? `
+      <div class="task-status-summary">
+        <div class="task-summary-top">
+          <span><strong>Running...</strong></span>
+          <span>--</span>
         </div>
       </div>
     `
     : "";
 
-  const rows = events
-    .map((event) => {
-      const stageName = String(event.stage || "status").toLowerCase();
-      const metaBits = [];
-      if (event.model) metaBits.push(`model: ${escapeHtml(String(event.model))}`);
-      if (event.stepIndex !== null) {
-        const total = event.totalSteps ? `/${event.totalSteps}` : "";
-        metaBits.push(`step: ${event.stepIndex + 1}${total}`);
+  const rows = taskItems
+    .map((item, idx) => {
+      let status = "pending";
+      if (idx < doneSteps) {
+        status = "done";
+      } else if (runningIndex !== null && idx === runningIndex) {
+        status = "running";
+      } else if (item.status === "running" && runningIndex === null) {
+        status = "running";
       }
-      if (event.retry !== null) metaBits.push(`retry: ${event.retry}`);
-      const metaText = metaBits.join(" | ");
+      const symbol = status === "done" ? "✓" : status === "running" ? "●" : "○";
+      const effectClass = status === "running" ? "shimmer pulse" : "";
       return `
-        <div class="task-status-item stage-${escapeHtml(stageName)}">
-          <div class="task-status-head">
-            <div class="task-status-left">
-              <span class="task-status-dot"></span>
-              <span class="task-status-stage">${escapeHtml(formatStageLabel(event.stage))}</span>
-            </div>
-            <span class="task-status-time">${formatClockTime(event.timestamp)}</span>
-          </div>
-          <div class="task-status-message">${escapeHtml(event.message || "")}</div>
-          ${metaText ? `<div class="task-status-meta">${metaText}</div>` : ""}
+        <div class="task-check-item status-${escapeHtml(status)} ${effectClass}">
+          <span class="task-check-index">${idx + 1}</span>
+          <span class="task-check-symbol">${symbol}</span>
+          <span class="task-check-title">${escapeHtml(item.title || `Task ${idx + 1}`)}</span>
         </div>
       `;
     })
     .join("");
 
-  taskStatusList.innerHTML = `${summaryBlock}${rows}`;
+  const artifactBlock = artifacts.length
+    ? `
+      <div class="task-artifact-wrap">
+        <div class="task-artifact-head">
+          <span>Generated Files</span>
+          <button class="runtime-artifact-btn ghost" type="button" data-artifact-bundle="1" data-session-id="${escapeHtml(convo?.id || "")}">Download ZIP</button>
+        </div>
+        <div class="task-artifact-grid artifact-icon-grid compact">${artifacts
+          .map((item) => renderArtifactIconTile(convo?.id || "", item, true, true))
+          .join("")}</div>
+      </div>
+    `
+    : "";
+
+  taskStatusList.innerHTML = `${summaryBlock}${rows}${artifactBlock}`;
 
   setTaskStatusCollapsed(state.taskStatusCollapsed, false);
+  updateTaskStatusActionButtons(true);
   syncSidePaneLayout();
+}
+
+function hasRetryableRequest(convo) {
+  const req = convo?.lastRequest;
+  return Boolean(req && typeof req.text === "string" && req.text.trim());
+}
+
+function updateTaskStatusActionButtons(hasTaskContent) {
+  const convo = getActiveConversation();
+  const canRetry = !state.isStreaming && hasRetryableRequest(convo);
+  const canStop = state.isStreaming && Boolean(activeStreamAbortController);
+
+  if (taskRetryBtn) {
+    taskRetryBtn.disabled = !canRetry;
+    taskRetryBtn.setAttribute("aria-disabled", String(!canRetry));
+  }
+  if (taskStopBtn) {
+    taskStopBtn.disabled = !canStop;
+    taskStopBtn.setAttribute("aria-disabled", String(!canStop));
+  }
+  if (taskClearBtn) {
+    taskClearBtn.disabled = !hasTaskContent;
+    taskClearBtn.setAttribute("aria-disabled", String(!hasTaskContent));
+  }
+  if (taskStatusToggleBtn) {
+    taskStatusToggleBtn.disabled = !hasTaskContent;
+    taskStatusToggleBtn.setAttribute("aria-disabled", String(!hasTaskContent));
+  }
 }
 
 function appendEvidenceItem(conversationId, item) {
@@ -920,6 +1755,11 @@ function renderEvidencePanel() {
   if (!canShowSidePane()) {
     evidencePane.hidden = true;
     evidenceList.innerHTML = "";
+    setEvidenceCollapsed(false, false);
+    if (evidenceToggleBtn) {
+      evidenceToggleBtn.disabled = true;
+      evidenceToggleBtn.setAttribute("aria-disabled", "true");
+    }
     syncSidePaneLayout();
     return;
   }
@@ -929,6 +1769,11 @@ function renderEvidencePanel() {
   evidencePane.hidden = !hasContent;
   if (!hasContent) {
     evidenceList.innerHTML = "";
+    setEvidenceCollapsed(false, false);
+    if (evidenceToggleBtn) {
+      evidenceToggleBtn.disabled = true;
+      evidenceToggleBtn.setAttribute("aria-disabled", "true");
+    }
     syncSidePaneLayout();
     return;
   }
@@ -954,6 +1799,11 @@ function renderEvidencePanel() {
     })
     .join("");
 
+  if (evidenceToggleBtn) {
+    evidenceToggleBtn.disabled = false;
+    evidenceToggleBtn.setAttribute("aria-disabled", "false");
+  }
+  setEvidenceCollapsed(state.evidenceCollapsed, false);
   syncSidePaneLayout();
 }
 
@@ -1121,10 +1971,14 @@ function persistState() {
       chatCounter: state.chatCounter,
       chatMode: state.chatMode,
       generalModel: state.generalModel,
+      webSearchEnabled: state.webSearchEnabled,
+      webReadEnabled: state.webReadEnabled,
+      fileAccessEnabled: state.fileAccessEnabled,
       edaAnalysisEnabled: state.edaAnalysisEnabled,
       sqlAnalysisEnabled: state.sqlAnalysisEnabled,
       isDbConnected: state.isDbConnected,
       taskStatusCollapsed: state.taskStatusCollapsed,
+      evidenceCollapsed: state.evidenceCollapsed,
     })
   );
 }
@@ -1142,6 +1996,8 @@ function restoreState() {
       .map((convo, index) => {
         const messages = normalizeMessages(convo?.messages);
         const taskEvents = Array.isArray(convo?.taskEvents) ? convo.taskEvents : [];
+        const taskItems = normalizeTaskItems(convo?.taskItems);
+        const artifacts = normalizeArtifactItems(convo?.artifacts);
         const usage = convo?.usage && typeof convo.usage === "object" ? convo.usage : null;
         const evidenceItems = Array.isArray(convo?.evidenceItems) ? convo.evidenceItems : [];
         return {
@@ -1154,8 +2010,11 @@ function restoreState() {
           updatedAt: Number(convo?.updatedAt || Date.now()),
           messages,
           taskEvents,
+          taskItems,
+          artifacts,
           usage,
           evidenceItems,
+          lastRequest: normalizeLastRequest(convo?.lastRequest),
         };
       })
       .filter((convo) => convo.id);
@@ -1169,10 +2028,14 @@ function restoreState() {
     state.chatCounter = Number(parsed.chatCounter || normalizedConversations.length + 1);
     state.chatMode = parsed.chatMode === "expert" ? "expert" : "general";
     state.generalModel = isValidGeneralModel(parsed.generalModel) ? parsed.generalModel : "deepseek";
+    state.webSearchEnabled = Boolean(parsed.webSearchEnabled);
+    state.webReadEnabled = Boolean(parsed.webReadEnabled);
+    state.fileAccessEnabled = Boolean(parsed.fileAccessEnabled);
     state.edaAnalysisEnabled = Boolean(parsed.edaAnalysisEnabled);
     state.sqlAnalysisEnabled = Boolean(parsed.sqlAnalysisEnabled);
     state.isDbConnected = Boolean(parsed.isDbConnected);
     state.taskStatusCollapsed = Boolean(parsed.taskStatusCollapsed);
+    state.evidenceCollapsed = Boolean(parsed.evidenceCollapsed);
     if (state.chatMode !== "expert") {
       state.edaAnalysisEnabled = false;
       state.sqlAnalysisEnabled = false;
@@ -1190,6 +2053,7 @@ function restoreState() {
 
 // 创建新会话
 function createConversation() {
+  cancelLastUserEditing();
   const id = createId();
   const convo = {
     id,
@@ -1198,8 +2062,11 @@ function createConversation() {
     updatedAt: Date.now(),
     messages: [],
     taskEvents: [],
+    taskItems: [],
+    artifacts: [],
     evidenceItems: [],
     usage: null,
+    lastRequest: null,
   };
 
   state.chatCounter += 1;
@@ -1214,6 +2081,7 @@ function createConversation() {
 // 切换会话
 function switchConversation(conversationId) {
   if (!state.conversations.some((c) => c.id === conversationId)) return;
+  cancelLastUserEditing();
   state.activeConversationId = conversationId;
   persistState();
   renderAll();
@@ -1230,6 +2098,7 @@ function deleteConversation(conversationId) {
 
   // 若删除的是当前会话，切到剩余第一条
   if (state.activeConversationId === conversationId) {
+    cancelLastUserEditing();
     state.activeConversationId = state.conversations[0]?.id ?? null;
   }
 
@@ -1259,6 +2128,7 @@ function clearAllHistory() {
   state.conversations = [];
   state.activeConversationId = null;
   state.chatCounter = 1;
+  cancelLastUserEditing();
 
   // 创建一个新的空白会话
   createConversation();
@@ -1316,7 +2186,9 @@ function renderMessages() {
     return;
   }
 
-  for (const msg of convo.messages) {
+  const lastUserIndex = findLastUserMessageIndex(convo);
+  for (let idx = 0; idx < convo.messages.length; idx += 1) {
+    const msg = convo.messages[idx];
     const article = document.createElement("article");
     article.className = `msg ${msg.role}`;
 
@@ -1325,15 +2197,35 @@ function renderMessages() {
     if (msg.role === "assistant" && msg.pending) {
       bubble.classList.add("thinking");
       const pendingLabel = typeof msg.pendingLabel === "string" && msg.pendingLabel.trim() ? msg.pendingLabel.trim() : "In progress 🔍";
-      bubble.innerHTML = `<span class="thinking-label">${escapeHtml(pendingLabel)}</span>`;
+      bubble.innerHTML = `<span class="thinking-label loading-scan">${escapeHtml(pendingLabel)}</span>`;
     } else if (msg.role === "assistant") {
       bubble.classList.add("rich");
-      bubble.innerHTML = renderAssistantMessageHtml(msg.text);
+      const normalizedArtifacts = normalizeArtifactItems(msg.artifacts);
+      const displayText = condenseAssistantTextForArtifacts(msg.text, normalizedArtifacts);
+      const artifactHtml = renderAssistantArtifactCards(convo.id, normalizedArtifacts);
+      bubble.innerHTML = `${renderAssistantMessageHtml(displayText)}${artifactHtml}`;
     } else {
       bubble.textContent = msg.text;
     }
 
     article.appendChild(bubble);
+    if (msg.role === "user" && idx === lastUserIndex) {
+      const editBtn = document.createElement("button");
+      editBtn.className = "message-edit-btn";
+      editBtn.type = "button";
+      editBtn.textContent = state.isEditingLastUser ? "Cancel Edit" : "Edit";
+      editBtn.disabled = state.isStreaming;
+      editBtn.setAttribute("aria-label", "Edit last user message");
+      editBtn.addEventListener("click", () => {
+        if (state.isEditingLastUser) {
+          cancelLastUserEditing();
+          renderMessages();
+          return;
+        }
+        beginLastUserEditing();
+      });
+      article.appendChild(editBtn);
+    }
 
     if (msg.role === "assistant" && !msg.pending && typeof msg.edaReportThreadId === "string" && msg.edaReportThreadId.trim()) {
       const actions = document.createElement("div");
@@ -1556,6 +2448,8 @@ function initDbConnection() {
 
 // 3. 脚本入口：等待 DOM 加载完毕再启动
 document.addEventListener("DOMContentLoaded", () => {
+  closeArtifactPreviewModal();
+
   // Restore persisted state before binding interactive controls.
   const restored = restoreState();
   if (!restored) {
@@ -1588,6 +2482,7 @@ function appendAssistantSystemMessage(text, meta = {}) {
   convo.messages.push({
     role: "assistant",
     text: text.trim(),
+    artifacts: [],
     edaReportThreadId: typeof meta.edaReportThreadId === "string" ? meta.edaReportThreadId : null,
     edaMessageSource: meta?.edaMessageSource === "upload" || meta?.edaMessageSource === "chat" ? meta.edaMessageSource : null,
   });
@@ -1597,22 +2492,28 @@ function appendAssistantSystemMessage(text, meta = {}) {
   renderAll();
 }
 
-async function streamAssistantReply(conversationId, assistantMessage, userText, options = {}) {
+async function streamAssistantReply(conversationId, assistantMessage, userText, options = {}, requestMeta = {}) {
+  const requestMode = requestMeta?.mode === "expert" ? "expert" : "general";
+  const requestGeneralModel = isValidGeneralModel(requestMeta?.generalModel)
+    ? requestMeta.generalModel
+    : state.generalModel;
+
   const mergedProviderOptions = {
     ...(CHAT_BACKEND_CONFIG.provider_options || {}),
     ...options,
   };
-  if (state.chatMode === "general") {
-    mergedProviderOptions.general_model = state.generalModel;
+  if (requestMode === "general") {
+    mergedProviderOptions.general_model = requestGeneralModel;
   }
 
-  // 通过 fetch 获取 ReadableStream，按 SSE 帧实时读取 token。
+  // Use fetch stream + SSE framing to update the assistant message progressively.
   const resp = await fetch("/api/chat/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal: requestMeta?.abortSignal,
     body: JSON.stringify({
       session_id: conversationId,
-      mode: state.chatMode,
+      mode: requestMode,
       message: userText,
       provider: CHAT_BACKEND_CONFIG.provider || null,
       model: CHAT_BACKEND_CONFIG.model || null,
@@ -1659,11 +2560,77 @@ async function streamAssistantReply(conversationId, assistantMessage, userText, 
           if (tokenMeta?.usage) {
             setConversationUsage(conversationId, tokenMeta.usage);
           }
+          const runtime = ensureMessageRuntime(assistantMessage);
+          runtime.stage = typeof tokenMeta.stage === "string" ? tokenMeta.stage : runtime.stage;
+          runtime.capability = typeof tokenMeta.capability === "string" ? tokenMeta.capability : runtime.capability;
+          const taskItems = normalizeTaskItems(tokenMeta.task_items);
+          if (taskItems.length > 0) {
+            runtime.taskItems = taskItems;
+            const convo = state.conversations.find((item) => item.id === conversationId);
+            if (convo) {
+              convo.taskItems = taskItems;
+            }
+          }
+          if (assistantMessage.pending) {
+            assistantMessage.pendingLabel = buildPendingLabelFromMeta(tokenMeta);
+            const active = getActiveConversation();
+            if (active && active.id === conversationId) {
+              renderMessages();
+            }
+          }
+          continue;
+        }
+        if (tokenMeta?.kind === "progress") {
+          if (tokenMeta?.usage) {
+            setConversationUsage(conversationId, tokenMeta.usage);
+          }
+          const runtime = ensureMessageRuntime(assistantMessage);
+          runtime.stage = typeof tokenMeta.stage === "string" ? tokenMeta.stage : runtime.stage;
+          runtime.capability = typeof tokenMeta.capability === "string" ? tokenMeta.capability : runtime.capability;
+          const taskItems = normalizeTaskItems(tokenMeta.task_items);
+          if (taskItems.length > 0) {
+            runtime.taskItems = taskItems;
+            const convo = state.conversations.find((item) => item.id === conversationId);
+            if (convo) {
+              convo.taskItems = taskItems;
+            }
+          }
+          const delta = typeof payload?.payload?.delta === "string" ? payload.payload.delta.trim() : "";
+          if (delta) {
+            runtime.progressLogs.push(delta);
+            if (runtime.progressLogs.length > 50) {
+              runtime.progressLogs = runtime.progressLogs.slice(-50);
+            }
+          }
+          if (assistantMessage.pending) {
+            assistantMessage.pendingLabel = buildPendingLabelFromMeta(tokenMeta);
+            const active = getActiveConversation();
+            if (active && active.id === conversationId) {
+              renderMessages();
+            }
+          }
           continue;
         }
         if (tokenMeta?.kind === "evidence") {
           if (payload?.payload?.meta?.item) {
             appendEvidenceItem(conversationId, payload.payload.meta.item);
+          }
+          continue;
+        }
+        if (tokenMeta?.kind === "artifact") {
+          const artifactItem = payload?.payload?.meta?.item;
+          const convo = state.conversations.find((item) => item.id === conversationId);
+          if (convo) {
+            const conversationArtifacts = ensureConversationArtifacts(convo);
+            upsertArtifactItem(conversationArtifacts, artifactItem);
+          }
+          const runtime = ensureMessageRuntime(assistantMessage);
+          const runtimeArtifacts = Array.isArray(runtime.artifacts) ? runtime.artifacts : [];
+          runtime.artifacts = upsertArtifactItem(runtimeArtifacts, artifactItem);
+          assistantMessage.artifacts = upsertArtifactItem(normalizeArtifactItems(assistantMessage.artifacts), artifactItem);
+          const active = getActiveConversation();
+          if (active && active.id === conversationId) {
+            renderMessages();
           }
           continue;
         }
@@ -1697,6 +2664,20 @@ async function streamAssistantReply(conversationId, assistantMessage, userText, 
         if (payload?.payload?.usage) {
           setConversationUsage(conversationId, payload.payload.usage);
         }
+        if (Array.isArray(payload?.payload?.artifacts)) {
+          const normalizedArtifacts = normalizeArtifactItems(payload.payload.artifacts);
+          const convo = state.conversations.find((item) => item.id === conversationId);
+          if (convo) {
+            convo.artifacts = normalizedArtifacts;
+          }
+          const runtime = ensureMessageRuntime(assistantMessage);
+          runtime.artifacts = normalizedArtifacts;
+          assistantMessage.artifacts = normalizedArtifacts;
+        }
+        if (typeof payload?.payload?.capability === "string") {
+          const runtime = ensureMessageRuntime(assistantMessage);
+          runtime.capability = payload.payload.capability;
+        }
         continue;
       }
 
@@ -1714,7 +2695,14 @@ async function submitMessage(text, options = {}, uiOptions = {}) {
   if (!convo || state.isStreaming) return;
 
   const hideUserMessage = Boolean(uiOptions.hideUserMessage);
-  const pendingLabel = typeof uiOptions.pendingLabel === "string" ? uiOptions.pendingLabel : "";
+  const pendingLabel = typeof uiOptions.pendingLabel === "string" && uiOptions.pendingLabel.trim()
+    ? uiOptions.pendingLabel
+    : "思考中 · 路由中";
+  const requestMode = uiOptions.mode === "expert" ? "expert" : state.chatMode === "expert" ? "expert" : "general";
+  const requestGeneralModel = isValidGeneralModel(uiOptions.generalModel)
+    ? uiOptions.generalModel
+    : state.generalModel;
+  const providerOptions = options && typeof options === "object" ? { ...options } : {};
 
   if (!Array.isArray(convo.messages)) {
     convo.messages = [];
@@ -1728,6 +2716,8 @@ async function submitMessage(text, options = {}, uiOptions = {}) {
     text: "",
     pending: true,
     pendingLabel,
+    runtime: createRuntimeState(),
+    artifacts: [],
     edaReportThreadId: options?.eda_analysis ? convo.id : null,
     edaMessageSource: options?.eda_analysis ? "chat" : null,
   };
@@ -1741,20 +2731,36 @@ if (!hideUserMessage && /^New Chat\s\d+$/.test(convo.title)) {
 
   // 最近更新的会话放到顶部
   state.conversations.sort((a, b) => b.updatedAt - a.updatedAt);
+  convo.lastRequest = {
+    text,
+    providerOptions,
+    mode: requestMode,
+    generalModel: requestGeneralModel,
+    timestamp: Date.now(),
+  };
 
+  const streamController = new AbortController();
+  activeStreamAbortController = streamController;
   state.isStreaming = true;
   composerInput.disabled = true;
   persistState();
   renderAll();
 
   try {
-    await streamAssistantReply(convo.id, assistantMessage, text, options);
+    await streamAssistantReply(convo.id, assistantMessage, text, providerOptions, {
+      mode: requestMode,
+      generalModel: requestGeneralModel,
+      abortSignal: streamController.signal,
+    });
+    if (requestMode === "general") {
+      await refreshConversationArtifacts(convo.id, assistantMessage);
+    }
     assistantMessage.pending = false;
     if (!assistantMessage.text.trim()) {
       assistantMessage.text = "模型未返回文本内容。";
     }
 
-    const isExpertAnalysis = state.chatMode === "expert" && (state.edaAnalysisEnabled || state.sqlAnalysisEnabled);
+    const isExpertAnalysis = requestMode === "expert" && (state.edaAnalysisEnabled || state.sqlAnalysisEnabled);
 
     if (!isExpertAnalysis) {
       state.uploadedFiles = [];
@@ -1768,8 +2774,15 @@ if (!hideUserMessage && /^New Chat\s\d+$/.test(convo.title)) {
     syncModeUi();
   } catch (err) {
     assistantMessage.pending = false;
-    assistantMessage.text = `Request failed: ${err?.message || "Unknown error"}`;
+    if (err?.name === "AbortError") {
+      assistantMessage.text = "Generation stopped by user.";
+    } else {
+      assistantMessage.text = `Request failed: ${err?.message || "Unknown error"}`;
+    }
   } finally {
+    if (activeStreamAbortController === streamController) {
+      activeStreamAbortController = null;
+    }
     convo.updatedAt = Date.now();
     state.conversations.sort((a, b) => b.updatedAt - a.updatedAt);
     state.isStreaming = false;
@@ -1778,6 +2791,39 @@ if (!hideUserMessage && /^New Chat\s\d+$/.test(convo.title)) {
     renderAll();
     composerInput.focus();
   }
+}
+
+async function rerunWithEditedLastUser(editedText, options = {}) {
+  const convo = getActiveConversation();
+  if (!convo || state.isStreaming) return;
+
+  const lastUserIndex = findLastUserMessageIndex(convo);
+  if (lastUserIndex < 0) {
+    state.isEditingLastUser = false;
+    await submitMessage(editedText, options);
+    return;
+  }
+
+  const response = await fetch("/api/chat/rewrite-last-user", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: convo.id }),
+  });
+  if (!response.ok) {
+    throw new Error(`编辑重跑失败：HTTP ${response.status}`);
+  }
+
+  convo.messages = convo.messages.slice(0, lastUserIndex);
+  convo.taskEvents = [];
+  convo.taskItems = [];
+  convo.artifacts = [];
+  convo.evidenceItems = [];
+  convo.updatedAt = Date.now();
+  state.isEditingLastUser = false;
+  persistState();
+  renderAll();
+
+  await submitMessage(editedText, options, { pendingLabel: "思考中 · 已基于编辑内容重跑" });
 }
 
 // Enter 发送，Shift+Enter 换行
@@ -1839,7 +2885,59 @@ taskChipBtn?.addEventListener("click", () => {
   if (state.chatMode !== "expert") {
     state.edaAnalysisEnabled = false;
     state.sqlAnalysisEnabled = false;
+  } else {
+    state.generalCapabilityPreset = "";
   }
+  renderAll();
+  persistState();
+});
+
+function setGeneralCapabilityPreset(capability) {
+  if (state.chatMode !== "general") {
+    return;
+  }
+  if (state.generalCapabilityPreset === capability) {
+    state.generalCapabilityPreset = "";
+  } else {
+    state.generalCapabilityPreset = capability;
+  }
+  renderAll();
+  persistState();
+}
+
+websiteBuilderBtn?.addEventListener("click", () => {
+  setGeneralCapabilityPreset("website_builder");
+  composerInput.focus();
+});
+
+slideBuilderBtn?.addEventListener("click", () => {
+  setGeneralCapabilityPreset("slide_builder");
+  composerInput.focus();
+});
+
+webSearchToggleBtn?.addEventListener("click", () => {
+  if (state.chatMode !== "general") {
+    return;
+  }
+  state.webSearchEnabled = !state.webSearchEnabled;
+  renderAll();
+  persistState();
+});
+
+webReadToggleBtn?.addEventListener("click", () => {
+  if (state.chatMode !== "general") {
+    return;
+  }
+  state.webReadEnabled = !state.webReadEnabled;
+  renderAll();
+  persistState();
+});
+
+fileAccessToggleBtn?.addEventListener("click", () => {
+  if (state.chatMode !== "general") {
+    return;
+  }
+  state.fileAccessEnabled = !state.fileAccessEnabled;
   renderAll();
   persistState();
 });
@@ -1879,7 +2977,14 @@ fileUploadInput?.addEventListener("change", async () => {
     if (!Array.isArray(activeConvo.messages)) {
       activeConvo.messages = [];
     }
-    edaPendingMessage = { role: "assistant", text: "", pending: true, pendingLabel: "EDA analysis in progress 🔍" };
+    edaPendingMessage = {
+      role: "assistant",
+      text: "",
+      pending: true,
+      pendingLabel: "EDA analysis in progress 🔍",
+      runtime: createRuntimeState(),
+      artifacts: [],
+    };
     activeConvo.messages.push(edaPendingMessage);
     activeConvo.updatedAt = Date.now();
     state.conversations.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -2014,13 +3119,79 @@ htmlPreviewCloseBtn?.addEventListener("click", () => {
   syncHtmlPreview({ html: lastHtmlPreviewContent, sourceKey: currentHtmlPreviewSourceKey });
 });
 
+artifactPreviewCloseBtn?.addEventListener("click", () => {
+  closeArtifactPreviewModal();
+});
+
+artifactPreviewModal?.addEventListener("click", (e) => {
+  if (e.target === artifactPreviewModal) {
+    closeArtifactPreviewModal();
+  }
+});
+
+artifactPreviewDownloadBtn?.addEventListener("click", () => {
+  if (!activeArtifactPreview) return;
+  downloadArtifact(activeArtifactPreview.sessionId, activeArtifactPreview.artifactPath);
+});
+
+messageList?.addEventListener("click", async (e) => {
+  await handleArtifactActionClick(e.target);
+});
+
+taskStatusPane?.addEventListener("click", async (e) => {
+  await handleArtifactActionClick(e.target);
+});
+
+taskRetryBtn?.addEventListener("click", () => {
+  if (state.isStreaming) return;
+  const convo = getActiveConversation();
+  const lastRequest = convo?.lastRequest;
+  if (!lastRequest || typeof lastRequest.text !== "string" || !lastRequest.text.trim()) {
+    return;
+  }
+
+  submitMessage(lastRequest.text, lastRequest.providerOptions || {}, {
+    hideUserMessage: true,
+    pendingLabel: "Retrying...",
+    mode: lastRequest.mode,
+    generalModel: lastRequest.generalModel,
+  });
+});
+
+taskStopBtn?.addEventListener("click", () => {
+  if (!activeStreamAbortController) return;
+  activeStreamAbortController.abort();
+});
+
+taskClearBtn?.addEventListener("click", () => {
+  const convo = getActiveConversation();
+  if (!convo) return;
+  convo.taskEvents = [];
+  convo.taskItems = [];
+  convo.usage = null;
+  convo.updatedAt = Date.now();
+  persistState();
+  renderAll();
+});
+
 taskStatusToggleBtn?.addEventListener("click", () => {
   setTaskStatusCollapsed(!state.taskStatusCollapsed);
   renderTaskStatusPanel();
 });
 
+evidenceToggleBtn?.addEventListener("click", () => {
+  setEvidenceCollapsed(!state.evidenceCollapsed);
+  renderEvidencePanel();
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && artifactPreviewModal && !artifactPreviewModal.hidden) {
+    closeArtifactPreviewModal();
+  }
+});
+
 // 提交消息
-composerForm.addEventListener("submit", (e) => {
+composerForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const text = composerInput.value.trim();
   if (!text || state.isStreaming) return;
@@ -2029,12 +3200,29 @@ composerForm.addEventListener("submit", (e) => {
   const dynamicOptions = {
     eda_analysis: isExpertMode && !!state.edaAnalysisEnabled,
     sql_analysis: isExpertMode && !!state.sqlAnalysisEnabled,
+    general_web_search: state.chatMode === "general" && !!state.webSearchEnabled,
+    general_web_read: state.chatMode === "general" && !!state.webReadEnabled,
+    general_file_access: state.chatMode === "general" && !!state.fileAccessEnabled,
+    general_capability:
+      state.chatMode === "general" &&
+      (state.generalCapabilityPreset === "website_builder" || state.generalCapabilityPreset === "slide_builder")
+        ? state.generalCapabilityPreset
+        : null,
     file_name: state.uploadedFiles.map((item) => item.name).join(",") || null
   };
 
-  submitMessage(text, dynamicOptions);
-  composerInput.value = "";
-  if (typeof autoResizeTextarea === 'function') autoResizeTextarea();
+  try {
+    const submittedText = text;
+    composerInput.value = "";
+    if (typeof autoResizeTextarea === "function") autoResizeTextarea();
+    if (state.isEditingLastUser) {
+      await rerunWithEditedLastUser(submittedText, dynamicOptions);
+    } else {
+      await submitMessage(submittedText, dynamicOptions);
+    }
+  } catch (err) {
+    appendAssistantSystemMessage(`Request failed: ${err?.message || "Unknown error"}`);
+  }
 
 });
 

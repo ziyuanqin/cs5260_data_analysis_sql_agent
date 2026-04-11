@@ -10,7 +10,7 @@
   "local_model_name": "local-default-model",
   "general_openai_provider": "openai_compatible",
   "general_openai_model_name": "gpt-4o-mini",
-  "general_deepseek_provider": "openai_compatible",
+  "general_deepseek_provider": "deepseek_compatible",
   "general_deepseek_model_name": "deepseek-chat",
   "deepseek_api_key": "",
   "deepseek_api_base_url": "https://api.deepseek.com/v1",
@@ -23,7 +23,7 @@
   "agent_summarizer_model_name": "gpt-4o-mini",
   "agent_max_review_retries": 2,
   "fallback_model_name": "gpt-4o-mini",
-  "session_token_budget": 12000,
+  "session_token_budget": 320000,
   "session_cost_budget_usd": 0.8,
   "default_price_per_1k_tokens_usd": 0.002,
   "model_price_per_1k_tokens_usd": {
@@ -36,5 +36,8 @@
   "planning_multi_question_marks": 2,
   "planning_short_direct_chars": 20,
   "request_timeout": 100,
-  "history_max_messages": 20
+  "history_max_messages": 20,
+  "memory_auto_compress_enabled": true,
+  "memory_keep_recent_messages": 12,
+  "memory_summary_max_chars": 3000
 }

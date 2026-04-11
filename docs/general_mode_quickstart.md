@@ -25,10 +25,11 @@ This document explains what `general` mode does and how to use it in the web UI.
    - `DeepSeek`
    - `OpenAI`
    - `HuggingFace (Qwen)`
-3. Send a request:
+3. Optional: enable `Web Search` chip for general tasks that require external references.
+4. Send a request:
    - Short prompt -> direct answer
    - Complex prompt -> planner flow
-4. Watch side panels:
+5. Watch side panels:
    - `Task Status`: stage timeline + step progress + token/cost
    - `Evidence`: tool usage, source, and output excerpt
 

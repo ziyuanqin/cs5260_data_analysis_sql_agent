@@ -8,10 +8,16 @@ import os
 import shutil
 from collections.abc import AsyncGenerator
 
-from fastapi import APIRouter, Depends, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse, StreamingResponse
 
-from app.models import ChatRequest, ResetSessionRequest, ResetSessionResponse
+from app.models import (
+    ChatRequest,
+    ResetSessionRequest,
+    ResetSessionResponse,
+    RewriteLastUserRequest,
+    RewriteLastUserResponse,
+)
 from app.services.llm_service import ChatService
 from app.utils.sse import sse_data
 
@@ -25,7 +31,7 @@ def get_chat_service(request: Request) -> ChatService:
 
 
 @router.post("/stream")
-async def chat_stream(req: ChatRequest,request: Request, chat_service: ChatService = Depends(get_chat_service)):
+async def chat_stream(req: ChatRequest, request: Request, chat_service: ChatService = Depends(get_chat_service)):
     """以流式方式返回回复，供前端增量渲染。"""
     sql_app = None
     if hasattr(request.app.state, "sql_apps"):
@@ -67,11 +73,62 @@ async def reset_chat_session(req: ResetSessionRequest, chat_service: ChatService
     return ResetSessionResponse(ok=True, cleared=cleared)
 
 
+@router.post("/rewrite-last-user", response_model=RewriteLastUserResponse)
+async def rewrite_last_user(req: RewriteLastUserRequest, chat_service: ChatService = Depends(get_chat_service)):
+    """删除最后一条用户消息及其后续内容，用于“编辑最后一条并重跑”场景。"""
+
+    result = chat_service.rewrite_last_user_turn(req.session_id)
+    return RewriteLastUserResponse(
+        ok=True,
+        rewritten=bool(result.get("rewritten", False)),
+        removed_messages=int(result.get("removed_messages", 0)),
+        remaining_messages=int(result.get("remaining_messages", 0)),
+    )
+
+
 @router.get("/providers")
 async def list_chat_providers(chat_service: ChatService = Depends(get_chat_service)):
     """返回可选 provider 列表，便于前端做后端切换。"""
 
     return {"providers": chat_service.list_supported_providers()}
+
+
+@router.get("/artifacts/{session_id}")
+async def list_chat_artifacts(session_id: str, chat_service: ChatService = Depends(get_chat_service)):
+    """列出指定会话当前可下载产物。"""
+
+    return {"session_id": session_id, "items": chat_service.list_artifacts(session_id)}
+
+
+@router.get("/artifacts/{session_id}/download/{artifact_name:path}")
+async def download_chat_artifact(
+    session_id: str,
+    artifact_name: str,
+    chat_service: ChatService = Depends(get_chat_service),
+):
+    """下载单个产物文件。"""
+
+    try:
+        target = chat_service.resolve_artifact_file(session_id, artifact_name)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return FileResponse(path=str(target), filename=target.name, media_type="application/octet-stream")
+
+
+@router.get("/artifacts/{session_id}/bundle")
+async def download_chat_artifact_bundle(session_id: str, chat_service: ChatService = Depends(get_chat_service)):
+    """下载会话产物 ZIP 包。"""
+
+    items = chat_service.list_artifacts(session_id)
+    if not items:
+        raise HTTPException(status_code=404, detail="No artifacts available for this session.")
+
+    bundle_path = chat_service.build_artifact_bundle(session_id)
+    return FileResponse(path=str(bundle_path), filename=bundle_path.name, media_type="application/zip")
+
 
 @router.post("/cleanup")
 async def cleanup_session_files():

@@ -39,3 +39,18 @@ class ResetSessionResponse(BaseModel):
     ok: bool
     # 会话是否真实存在且已被删除。
     cleared: bool
+
+
+class RewriteLastUserRequest(BaseModel):
+    """截断最后一条用户消息及后续内容的请求体。"""
+
+    session_id: str
+
+
+class RewriteLastUserResponse(BaseModel):
+    """截断最后一条用户消息后的响应结构。"""
+
+    ok: bool
+    rewritten: bool
+    removed_messages: int
+    remaining_messages: int

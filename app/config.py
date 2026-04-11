@@ -25,6 +25,8 @@ class AppConfig:
     openai_api_base_url: str
     openai_api_key: str | None
     openai_model_name: str
+    deepseek_api_base_url: str
+    deepseek_api_key: str | None
 
     # Hugging Face 后端配置。
     huggingface_api_url: str
@@ -64,6 +66,9 @@ class AppConfig:
 
     request_timeout: int
     history_max_messages: int
+    memory_auto_compress_enabled: bool
+    memory_keep_recent_messages: int
+    memory_summary_max_chars: int
     frontend_dir: Path
 
 
@@ -205,7 +210,14 @@ def load_config(project_root: Path) -> AppConfig:
     openai_api_key = (
         openai_api_key_from_file
         if isinstance(openai_api_key_from_file, str) and openai_api_key_from_file.strip()
-        else None
+        else (os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_COMPAT_API_KEY") or None)
+    )
+
+    deepseek_api_key_from_file = config_data.get("deepseek_api_key")
+    deepseek_api_key = (
+        deepseek_api_key_from_file
+        if isinstance(deepseek_api_key_from_file, str) and deepseek_api_key_from_file.strip()
+        else (os.getenv("DEEPSEEK_API_KEY") or None)
     )
 
     huggingface_api_key_from_file = config_data.get("huggingface_api_key")
@@ -248,6 +260,13 @@ def load_config(project_root: Path) -> AppConfig:
         ),
         openai_api_key=openai_api_key,
         openai_model_name=openai_model_name,
+        deepseek_api_base_url=_pick_str(
+            config_data,
+            "deepseek_api_base_url",
+            "DEEPSEEK_API_BASE_URL",
+            "https://api.deepseek.com/v1",
+        ),
+        deepseek_api_key=deepseek_api_key,
         huggingface_api_url=_pick_str(
             config_data,
             "huggingface_api_url",
@@ -323,7 +342,7 @@ def load_config(project_root: Path) -> AppConfig:
             config_data,
             "session_token_budget",
             "SESSION_TOKEN_BUDGET",
-            12000,
+            320000,
         ),
         session_cost_budget_usd=_pick_float(
             config_data,
@@ -364,5 +383,23 @@ def load_config(project_root: Path) -> AppConfig:
         ),
         request_timeout=_pick_int(config_data, "request_timeout", "YUNWU_TIMEOUT", 100),
         history_max_messages=_pick_int(config_data, "history_max_messages", "YUNWU_HISTORY_MAX_MESSAGES", 20),
+        memory_auto_compress_enabled=_pick_bool(
+            config_data,
+            "memory_auto_compress_enabled",
+            "MEMORY_AUTO_COMPRESS_ENABLED",
+            True,
+        ),
+        memory_keep_recent_messages=_pick_int(
+            config_data,
+            "memory_keep_recent_messages",
+            "MEMORY_KEEP_RECENT_MESSAGES",
+            12,
+        ),
+        memory_summary_max_chars=_pick_int(
+            config_data,
+            "memory_summary_max_chars",
+            "MEMORY_SUMMARY_MAX_CHARS",
+            3000,
+        ),
         frontend_dir=project_root / "frontend",
     )
