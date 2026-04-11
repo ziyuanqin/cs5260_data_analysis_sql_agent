@@ -1,0 +1,15 @@
+# Python cache
+__pycache__/
+**/__pycache__/
+
+# Local uploaded datasets
+dataset/
+backend/dataset/
+
+.env
+.DS_Store
+
+# Local runtime and secrets
+runtime/
+*.db
+app_config.json

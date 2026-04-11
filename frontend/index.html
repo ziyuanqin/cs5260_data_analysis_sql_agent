@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agent UI Mock</title>
+    <link rel="stylesheet" href="./style.css?v=20260411c" />
+    <script>
+      window.MathJax = {
+        tex: {
+          inlineMath: [["\\(", "\\)"], ["$", "$"]],
+          displayMath: [["\\[", "\\]"], ["$$", "$$"]],
+          processEscapes: true,
+        },
+        options: {
+          skipHtmlTags: ["script", "noscript", "style", "textarea", "pre", "code"],
+        },
+      };
+    </script>
+    <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jsencrypt/3.3.2/jsencrypt.min.js"></script>
+  </head>
+  <body>
+    <!-- 整体布局：左侧边栏 + 右侧主区域 -->
+    <div class="layout">
+      <!-- 左侧导航栏（视觉风格参考截图） -->
+      <aside class="sidebar">
+        <div class="logo-container">
+          <img src="./nus_logo.jpg" alt="NUS Logo" class="nus-logo" />
+          <span class="course-title">CS5260</span>
+        </div>
+
+        <button id="newChatBtn" class="nav-btn primary">New Chat</button>
+
+        <section class="history-block">
+          <div class="history-header">
+            <h3>Chat</h3>
+            <button id="clearHistoryBtn" class="history-clear-btn" type="button" aria-label="Clear chat history">✕</button>
+          </div>
+          <div id="historyList"></div>
+        </section>
+
+        <div id="dbSidebarSection" class="sidebar-footer" style="display: none;">
+          <button id="dbConnectBtn" class="sidebar-btn">
+            <span>🔌 Database Connection</span>
+          </button>
+
+          <button id="dbDisconnectBtn" class="sidebar-btn btn-danger" style="display: none;">
+            <span>🚫 Disconnect DB</span>
+          </button>
+        </div>
+
+        <div id="dbModal" class="modal-overlay" hidden>
+          <div class="modal-content">
+            <h3>Database Connection</h3>
+            <form id="dbForm">
+              <input type="text" name="host" placeholder="Host ( e.g. localhost )" required>
+              <input type="text" name="port" placeholder="Port ( e.g. 5432 )" required>
+              <input type="text" name="user" placeholder="Username" required>
+              <input type="password" name="password" placeholder="Password" required>
+              <input type="text" name="database" placeholder="Database Name" required>
+              <div class="modal-actions">
+                <button type="button" id="closeModal">Cancel</button>
+                <button type="submit" class="primary-btn">Connect</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </aside>
+
+      <!-- 右侧主内容区 -->
+      <main id="mainPanel" class="main empty">
+        <!-- 顶部操作栏 -->
+        <header class="main-topbar">
+          <button class="model-switch">General Mode▾</button>
+        </header>
+
+        <div class="content-row">
+          <!-- 聊天内容区 -->
+          <section id="messageList" class="conversation" aria-live="polite">
+            <div id="emptyState" class="empty-state">
+              <h1 id="emptyTitle" class="empty-title">Hello, I'm General Mode</h1>
+            </div>
+          </section>
+
+          <div class="side-pane-stack">
+            <aside id="taskStatusPane" class="task-status-pane" hidden>
+              <div class="task-status-title">
+                <span>Task Status</span>
+                <div class="task-status-actions">
+                  <div id="taskStatusUsage" class="task-status-usage"></div>
+                  <button id="taskStatusToggleBtn" class="pane-toggle-btn" type="button" aria-label="Collapse task status">
+                    Collapse
+                  </button>
+                </div>
+              </div>
+              <div id="taskStatusList" class="task-status-list"></div>
+            </aside>
+
+            <aside id="evidencePane" class="evidence-pane" hidden>
+              <div class="evidence-title">
+                <span>Evidence</span>
+              </div>
+              <div id="evidenceList" class="evidence-list"></div>
+            </aside>
+
+            <aside id="htmlPreviewPane" class="html-preview" hidden>
+              <div class="html-preview-title">
+                <span>HTML Preview</span>
+                <button id="htmlPreviewCloseBtn" class="html-preview-close" type="button" aria-label="Close HTML preview">Close</button>
+              </div>
+              <iframe id="htmlPreviewFrame" class="html-preview-frame" sandbox="allow-scripts allow-forms"></iframe>
+            </aside>
+          </div>
+        </div>
+
+        <!-- 底部输入栏（悬浮样式） -->
+        <footer class="composer-wrap">
+          <form id="composerForm" class="composer">
+            <button class="circle-btn" type="button" aria-label="More">＋</button>
+            <textarea id="composerInput" rows="1" placeholder="Ask anything"></textarea>
+            <button id="sendBtn" class="circle-send" type="submit" aria-label="Send">➤</button>
+            <div class="chip-row" aria-label="Feature switches">
+              <button id="taskChipBtn" class="feature-chip" type="button">✶ Expert Mode</button>
+              <button id="fileUploadBtn" class="feature-chip" type="button">Upload Files</button>
+              <button id="edaAnalysisToggleBtn" class="feature-chip" type="button">EDA Analysis</button>
+              <button id="sqlAnalysisToggleBtn" class="feature-chip" type="button">SQL Analysis</button>
+            </div>
+            <input id="fileUploadInput" type="file" multiple hidden />
+            <div id="uploadStatus" class="upload-status" aria-live="polite" hidden></div>
+          </form>
+        </footer>
+      </main>
+    </div>
+
+    <script type="module" src="./app.js?v=20260411c"></script>
+  </body>
+</html>

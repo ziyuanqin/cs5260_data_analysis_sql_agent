@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+langgraph
+langchain
+langchain-openai
+pandas
+sqlalchemy
+python-multipart
+pydantic 
+openai
+python-dotenv
+matplotlib
+seaborn
+pycryptodome 
+pymysql
