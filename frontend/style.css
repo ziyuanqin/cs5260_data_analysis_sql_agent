@@ -406,6 +406,24 @@ textarea {
   font-weight: 600;
 }
 
+.model-menu-section-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #6b7280;
+  text-transform: uppercase;
+  padding: 6px 10px;
+  margin-top: 4px;
+  margin-bottom: 4px;
+  letter-spacing: 0.5px;
+}
+
+.model-menu-divider {
+  border: 0;
+  border-top: 1px solid #e5e7eb;
+  margin: 4px 0;
+  padding: 0;
+}
+
 /* 对话区 */
 .conversation {
   min-height: 0;

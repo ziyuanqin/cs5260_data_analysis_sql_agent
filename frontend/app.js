@@ -168,6 +168,16 @@ function openModelMenu() {
 function syncModelMenuSelection() {
   if (!modelMenuEl) return;
 
+  // Sync mode buttons
+  const modeButtons = modelMenuEl.querySelectorAll("[data-mode]");
+  for (const btn of modeButtons) {
+    const mode = btn.getAttribute("data-mode") || "";
+    const selected = mode === state.chatMode;
+    btn.classList.toggle("active", selected);
+    btn.setAttribute("aria-checked", String(selected));
+  }
+
+  // Sync model buttons (only shown in general mode)
   const items = modelMenuEl.querySelectorAll("[data-model-id]");
   for (const item of items) {
     const modelId = item.getAttribute("data-model-id") || "";
@@ -184,7 +194,51 @@ function ensureModelMenu() {
   menu.className = "model-menu";
   menu.hidden = true;
   menu.setAttribute("role", "menu");
-  menu.setAttribute("aria-label", "General mode model selection");
+  menu.setAttribute("aria-label", "Mode and model selection");
+
+  // Add mode selection (General / Expert)
+  const modeLabel = document.createElement("div");
+  modeLabel.className = "model-menu-section-label";
+  modeLabel.textContent = "Mode";
+  menu.appendChild(modeLabel);
+
+  for (const mode of ["general", "expert"]) {
+    const modeItem = document.createElement("button");
+    modeItem.type = "button";
+    modeItem.className = "model-menu-item";
+    modeItem.setAttribute("role", "menuitemradio");
+    modeItem.setAttribute("data-mode", mode);
+    modeItem.textContent = mode === "expert" ? "🔬 Expert Mode" : "✨ General Mode";
+    modeItem.addEventListener("click", () => {
+      if (state.chatMode !== mode) {
+        state.chatMode = mode;
+        
+        // Clear mode-specific states
+        if (mode === "general") {
+          state.edaAnalysisEnabled = false;
+          state.sqlAnalysisEnabled = false;
+        } else {
+          state.generalCapabilityPreset = "";
+        }
+        
+        renderAll();
+        persistState();
+      }
+      closeModelMenu();
+    });
+    menu.appendChild(modeItem);
+  }
+
+  // Add divider
+  const divider = document.createElement("hr");
+  divider.className = "model-menu-divider";
+  menu.appendChild(divider);
+
+  // Add model selection (only for general mode)
+  const modelLabel = document.createElement("div");
+  modelLabel.className = "model-menu-section-label";
+  modelLabel.textContent = "AI Model";
+  menu.appendChild(modelLabel);
 
   for (const modelOption of GENERAL_MODELS) {
     const modelId = modelOption.id;
@@ -2870,11 +2924,6 @@ const clearHistoryBtn = document.getElementById("clearHistoryBtn");
 clearHistoryBtn?.addEventListener("click", clearAllHistory);
 
 modelSwitch?.addEventListener("click", () => {
-  if (state.chatMode !== "general") {
-    closeModelMenu();
-    return;
-  }
-
   ensureModelMenu();
   if (!modelMenuEl) return;
 
@@ -2884,8 +2933,6 @@ modelSwitch?.addEventListener("click", () => {
   } else {
     closeModelMenu();
   }
-
-  syncModeUi();
 });
 
 // 点击后切换到专家模式，并更新欢迎语。
