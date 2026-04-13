@@ -22,7 +22,7 @@ async def get_public_key():
 
 @router.post("/connect")
 async def connect_db(request: Request, req: DBConnectRequest):
-    print(f"--- 尝试为 Session {req.session_id} 连接数据库: {req.database} ---")
+    print(f"--- Try to connect to the database for Session {req.session_id} : {req.database} ---")
     try:
         # --- 核心改动：解密密码 ---
         # 此时 req.password 是前端传来的长串 RSA 密文
@@ -40,23 +40,23 @@ async def connect_db(request: Request, req: DBConnectRequest):
 
         request.app.state.sql_apps[req.session_id] = sql_app
 
-        print(f"✅ 连接成功，Session {req.session_id} 密码已安全解密并验证")
-        return {"ok": True, "message": f"成功连接至 {req.database}"}
+        print(f"✅ Connection succeeded，Session {req.session_id} password has been securely decrypted and verified")
+        return {"ok": True, "message": f"Successfully connected to {req.database}"}
 
     except ValueError as ve:
         # 处理解密相关的安全错误
-        print(f"🔒 安全验证失败: {str(ve)}")
-        raise HTTPException(status_code=403, detail="密码解密失败，传输可能已被干扰")
+        print(f"🔒 Security verification failed: {str(ve)}")
+        raise HTTPException(status_code=403, detail="Password decryption failed. The transmission may have been interfered.")
     except Exception as e:
-        print(f"❌ 连接失败: {str(e)}")
-        raise HTTPException(status_code=400, detail=f"数据库连接失败: {str(e)}")
+        print(f"❌ Connection failed: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Database connection failed: {str(e)}")
 
 @router.post("/disconnect")
 async def disconnect_db(req: dict, request: Request):
     """断开指定 session 的数据库连接并清理资源"""
     session_id = req.get("session_id")
     if not session_id:
-        return {"ok": False, "msg": "缺少 session_id"}
+        return {"ok": False, "msg": "Lack session_id"}
 
     if hasattr(request.app.state, "sql_apps"):
         # 1. 弹出实例
@@ -68,10 +68,10 @@ async def disconnect_db(req: dict, request: Request):
             try:
                 # 假设你的 graph_app 里存了 engine 或者可以通过某种方式访问
                 # 如果暂时拿不到 engine，pop 掉实例也会让 GC 回收连接
-                print(f"--- [Session {session_id}] 数据库连接已断开并清理 ---")
+                print(f"--- [Session {session_id}] database connection has been disconnected and cleaned up ---")
             except Exception as e:
-                print(f"清理连接池失败: {e}")
+                print(f"Failed to clean up connection pool: {e}")
 
-            return {"ok": True, "msg": "连接已断开"}
+            return {"ok": True, "msg": "Connection dropped."}
 
-    return {"ok": False, "msg": "未找到活跃连接"}
+    return {"ok": False, "msg": "Active connection not found."}

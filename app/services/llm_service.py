@@ -1650,7 +1650,7 @@ Open `index.html` directly in your browser.
                     )
                     self._record_task_event(session_id, event_payload["payload"])
                     yield event_payload
-                    progress_preview = task_preview_items[0] if task_preview_items else "正在生成可执行步骤"
+                    progress_preview = task_preview_items[0] if task_preview_items else "Generating executable steps"
                     yield self._make_progress_token_event(
                         delta=f"Planner: {progress_preview}\n",
                         session_id=session_id,
@@ -1922,10 +1922,10 @@ Open `index.html` directly in your browser.
             async for chunk in graph_app.astream(inputs, config=config, stream_mode="updates"):
                 if "sql_gen" in chunk:
                     sql = chunk["sql_gen"].get("sql_query")
-                    if sql:
+                    if sql and sql.strip().upper() != "SKIP":
                         yield {
                             "event": "token",
-                            "payload": {"delta": f"\n> **🔍 正在生成 SQL:**\n> ```sql\n> {sql}\n> ```\n"},
+                            "payload": {"delta": f"\n> **🔍 Generating SQL:**\n> ```sql\n> {sql}\n> ```\n"},
                         }
 
                 if "analysis" in chunk:
@@ -1936,11 +1936,11 @@ Open `index.html` directly in your browser.
 
                 await asyncio.sleep(0)
 
-            final_text = full_analysis_text.strip() or "SQL 分析完成。"
+            final_text = full_analysis_text.strip() or "SQL analysis finished"
             self._append_session_message(session_id=session_id, role="assistant", content=final_text)
             yield {"event": "final", "payload": {"text": final_text}}
         except Exception as exc:
-            yield {"event": "error", "payload": {"message": f"SQL Agent 运行出错：{str(exc)}"}}
+            yield {"event": "error", "payload": {"message": f"SQL Agent error：{str(exc)}"}}
 
     def reset_session(self, session_id: str) -> bool:
         with self._lock:
@@ -2012,7 +2012,7 @@ Open `index.html` directly in your browser.
                 yield {"event": "token", "payload": {"delta": eda_text}}
                 yield {"event": "final", "payload": {"text": eda_text}}
             except Exception as exc:
-                yield {"event": "error", "payload": {"message": f"EDA 调用失败：{str(exc)}"}}
+                yield {"event": "error", "payload": {"message": f"EDA call failed：{str(exc)}"}}
             return
 
         if normalized_mode == "expert" and is_sql_mode:
@@ -2026,7 +2026,7 @@ Open `index.html` directly in your browser.
                 ):
                     yield event
             except Exception as exc:
-                yield {"event": "error", "payload": {"message": f"SQL Agent 运行出错：{str(exc)}"}}
+                yield {"event": "error", "payload": {"message": f"SQL Agent running error：{str(exc)}"}}
             return
 
         # general 模式：Manus-like 流程（含 intent -> direct/plan 路由）。
@@ -2086,8 +2086,8 @@ Open `index.html` directly in your browser.
                 yield router_event
                 yield self._make_progress_token_event(
                     delta=(
-                        f"Router: {'进入任务分步执行' if should_plan else '直接回答'}"
-                        + (f"（能力: {capability}）" if capability else "")
+                        f"Router: {'Step by step execution of the task' if should_plan else 'Direct answer'}"
+                        + (f"（Ability: {capability}）" if capability else "")
                         + "\n"
                     ),
                     session_id=session_id,
@@ -2159,7 +2159,7 @@ Open `index.html` directly in your browser.
                         capability=capability,
                     )
 
-                assistant_text = final_text.strip() or "处理完成。"
+                assistant_text = final_text.strip() or "Processing completed."
                 artifacts = self.list_artifacts(session_id)
                 self._append_session_message(session_id=session_id, role="assistant", content=assistant_text)
                 yield {
@@ -2185,14 +2185,14 @@ Open `index.html` directly in your browser.
                 yield {
                     "event": "error",
                     "content_type": "text",
-                    "payload": {"message": f"模型调用失败：{str(exc)}", "usage": self._get_usage_snapshot(session_id)},
+                    "payload": {"message": f"Model call failed：{str(exc)}", "usage": self._get_usage_snapshot(session_id)},
                 }
             except Exception as exc:
                 logger.exception("General stream failed: session_id=%s", session_id)
                 yield {
                     "event": "error",
                     "content_type": "text",
-                    "payload": {"message": f"模型调用失败：{str(exc)}", "usage": self._get_usage_snapshot(session_id)},
+                    "payload": {"message": f"Model call failed：{str(exc)}", "usage": self._get_usage_snapshot(session_id)},
                 }
             return
 
@@ -2219,7 +2219,7 @@ Open `index.html` directly in your browser.
                 selected_model or "unknown",
             )
 
-            assistant_text = final_text.strip() or "处理完成。"
+            assistant_text = final_text.strip() or "Processing completed."
             self._append_session_message(session_id=session_id, role="assistant", content=assistant_text)
             yield {
                 "event": "final",
@@ -2236,11 +2236,11 @@ Open `index.html` directly in your browser.
             yield {
                 "event": "error",
                 "content_type": "text",
-                "payload": {"message": f"模型调用失败：{str(exc)}", "usage": self._get_usage_snapshot(session_id)},
+                "payload": {"message": f"Model call failed：{str(exc)}", "usage": self._get_usage_snapshot(session_id)},
             }
         except Exception as exc:
             yield {
                 "event": "error",
                 "content_type": "text",
-                "payload": {"message": f"模型调用失败：{str(exc)}", "usage": self._get_usage_snapshot(session_id)},
+                "payload": {"message": f"Model call failed：{str(exc)}", "usage": self._get_usage_snapshot(session_id)},
             }

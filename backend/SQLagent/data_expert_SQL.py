@@ -30,6 +30,7 @@ class AgentState(TypedDict):
     error: Optional[str]
     retry_count: int
     schema_info: Optional[str]
+    intent: Optional[str]
 
 # 2. 定义节点逻辑
 class SQLExpert:
@@ -63,8 +64,19 @@ class SQLExpert:
                         counter += 1
 
                     df = pd.read_csv(path) if path.endswith('.csv') else pd.read_excel(path)
-                    df.columns = [c.strip().replace(' ', '_').replace('-', '_') for c in df.columns]
-                    # 阻塞 I/O
+                    def clean_column_name(name):
+                        # 1. 统一转小写，去除首尾空格
+                        name = str(name).strip().lower()
+                        # 2. 将空格、短横杠、点号等非法字符全部替换为下划线
+                        name = re.sub(r'[\s\-\.]+', '_', name)
+                        # 3. 去除重复的下划线 (e.g., "order--date" -> "order_date")
+                        name = re.sub(r'_+', '_', name)
+                        # 4. 确保不以数字开头（SQL规范）
+                        if name[0].isdigit():
+                            name = "col_" + name
+                        return name
+
+                    df.columns = [clean_column_name(c) for c in df.columns]
                     df.to_sql(final_table, engine, if_exists="replace", index=False)
                     existing_tables.append(final_table)
                     new_tables.append(final_table)
@@ -95,7 +107,15 @@ class SQLExpert:
 
                 full_schema.append(schema_str)
 
-            # 告诉 AI 明确的物理结构
+            mapping_guide = (
+                    "\n" + "="*30 + "\n"
+                                    "### COLUMN MAPPING RULES:\n"
+                                    "1. All Excel columns have been normalized: spaces (' '), dashes ('-'), and dots ('.') are replaced by underscores ('_').\n"
+                                    "2. Example: If a user asks for 'Order Date' or 'Order-Date', look for 'order_date' in the COLUMNS list above.\n"
+                                    "3. Case Sensitivity: Always use the exact case shown in the COLUMNS list (mostly lowercase)."
+            )
+            full_schema.append(mapping_guide)
+
             return {
                 "schema_info": "\n\n".join(full_schema),
                 "retry_count": 0,
@@ -119,19 +139,35 @@ class SQLExpert:
 
     async def generate_sql(self, state: AgentState):
 
-        # 1. 准备基础数据
-        schema = str(state.get('schema_info', "Unknown schema"))
-        current_question = state["messages"][-1].content if state.get("messages") else ""
-        domain_hint = str(self._get_relevant_knowledge(current_question, schema))
+        current_question = state["messages"][-1].content
+        schema = str(state.get('schema_info', ""))
         last_error = state.get('error')
 
-        # 2. 格式化错误信息 - 核心修复：严禁使用 f-string
-        if last_error:
-            # High-priority feedback to guide the LLM's self-correction
-            error_feedback = f"⚠️ WARNING: The previous SQL execution failed with error: {str(last_error)}. Please cross-reference the Schema and fix the syntax."
-        else:
-            error_feedback = "System status: Healthy."
+        domain_hint = str(self._get_relevant_knowledge(current_question, schema))
 
+        # 1. Security Check (Hard Block)
+        illegal_pattern = r"\b(DROP|DELETE|UPDATE|TRUNCATE|ALTER|INSERT|GRANT)\b"
+        if re.search(illegal_pattern, current_question, re.IGNORECASE):
+            return {
+                "intent": "violation",
+                "error": "Access Denied: You only have READ-ONLY (SELECT) permissions. Structural or data modifications are prohibited."
+            }
+
+        # 2. Intent Classification via LLM
+        # We ask the LLM to decide if this is a request for SQL or just a request for ideas.
+        intent_prompt = f"""
+        Analyze the user's request: "{current_question}"
+        Based on the context, categorize the intent as:
+        - 'advice': User is ONLY asking what CAN be done, seeking suggestions, or brainstorming.
+        - 'query': User is asking for specific data, numbers, or has accepted a previous suggestion and wants the result.
+        Return ONLY the word 'advice' or 'query'.
+        """
+        intent_res = self.llm.invoke(intent_prompt).content.lower().strip()
+
+        if 'advice' in intent_res:
+            return {"intent": "advice", "sql_query": "SKIP"}
+
+        error_feedback = f"Feedback: {str(last_error)}" if last_error else "System status: Healthy."
         dialect_prompt = "Standard MySQL syntax" if state.get('db_type') == 'mysql' else "SQLite-compatible syntax"
 
         # 3. 格式化对话历史
@@ -192,7 +228,7 @@ class SQLExpert:
 
         response = await self.llm.ainvoke(prompt)
         clean_sql = re.sub(r'```sql\s*|\s*```', '', response.content).strip().rstrip(';')
-        return {"sql_query": clean_sql}
+        return {"sql_query": clean_sql, "intent": "query"}
 
 
     async def execute_sql(self, state: AgentState, engine):
@@ -217,17 +253,49 @@ class SQLExpert:
 
     def analyze_result(self, state: AgentState):
 
-        current_question = state["messages"][-1].content if state.get("messages") else "Unknown problem"
-        query_result = state.get('query_result')
+        """
+        Final node that handles English communication for three scenarios:
+        1. Security violations (Read-only enforcement).
+        2. Strategic suggestions (Advice mode without SQL).
+        3. Data storytelling (Interpreting SQL query results).
+        """
+        intent = state.get("intent")
+        error = state.get('error')
+        current_question = state["messages"][-1].content if state.get("messages") else "N/A"
 
-        if state.get('error') and state.get('retry_count', 0) >= 3:
-
-            fail_msg = "System reached maximum retries without a successful query. Reason:" + str(state['error']) + "。"
+        # --- Scenario 1: Security or Max Retry Failures ---
+        if intent == "violation" or (error and state.get('retry_count', 0) >= 3):
+            fail_msg = (
+                f"I cannot proceed with this request. "
+                f"Reason: {error if error else 'Security Policy Violation - Only SELECT operations are allowed.'}"
+            )
             return {"analysis": fail_msg, "messages": [AIMessage(content=fail_msg)], "retry_count": 0}
 
-        # 处理成功情况
+        # --- Scenario 2: Strategic Advice Mode (No SQL was run) ---
+        if intent == "advice":
+            advice_template = Template(r"""
+            ### ROLE
+            You are a Senior Business Intelligence Consultant. The user is asking for analysis ideas.
+            
+            ### CONTEXT
+            - [User Question]: $question
+            - [Available Schema]: $schema
+            
+            ### OBJECTIVE
+            1. Suggest 3-4 specific, high-value business analyses based ONLY on the provided schema.
+            2. For each suggestion, explain the "Business Value" (e.g., "This helps identify churn").
+            3. STRICTLY PROHIBITED: Do not show any SQL code, table names, or technical parameters.
+            4. Language: Must be English.
+            """)
 
-        # 使用 Template 保护分析阶段的 Prompt
+            prompt = advice_template.safe_substitute(
+                question=current_question,
+                schema=state.get('schema_info', 'No schema provided')
+            )
+            response = self.llm.invoke(prompt)
+            return {"analysis": response.content, "messages": [AIMessage(content=response.content)]}
+
+        # --- Scenario 3: Data Interpretation Mode (After successful SQL execution)
         analysis_template = Template(r"""
         ### ROLE
         You are a Senior Strategic Business Consultant and Data Storyteller. Your goal is to transform raw query results into high-impact executive insights.
@@ -305,15 +373,41 @@ def create_smart_sql_graph(engine):
     workflow.set_entry_point("ingest")
     workflow.add_edge("ingest", "detect_schema")
     workflow.add_edge("detect_schema", "sql_gen")
-    workflow.add_edge("sql_gen", "sql_exec")
 
+    # 1. Intent Router after SQL Generation
+    def intent_router(state: AgentState):
+        """
+        Determines if we should execute SQL or skip directly to analysis.
+        """
+        intent = state.get("intent")
+        # If it's a violation (DROP) or just advice, BYPASS sql_exec
+        if intent in ["violation", "advice"]:
+            return "skip_to_analysis"
+        return "continue_to_exec"
+
+    # Add the conditional edge for sql_gen
+    workflow.add_conditional_edges(
+        "sql_gen",
+        intent_router,
+        {
+            "skip_to_analysis": "analysis",
+            "continue_to_exec": "sql_exec"
+        }
+    )
+
+    # 2. Retry Logic after SQL Execution
     def retry_logic(state: AgentState):
-        # 这里的 state 是字典，逻辑正确
+        # Only retry if it's a genuine execution error, not a policy violation
         if state.get("error") and state.get("retry_count", 0) < 2:
             return "retry"
         return "end"
 
-    workflow.add_conditional_edges("sql_exec", retry_logic, {"retry": "sql_gen", "end": "analysis"})
+    workflow.add_conditional_edges(
+        "sql_exec",
+        retry_logic,
+        {"retry": "sql_gen", "end": "analysis"}
+    )
+
     workflow.add_edge("analysis", END)
 
     checkpointer = MemorySaver()

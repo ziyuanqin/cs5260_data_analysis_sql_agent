@@ -1,6 +1,12 @@
 
 // Keep session data stable across refresh/close to avoid cross-session file cleanup side effects.
+window.addEventListener('DOMContentLoaded', () => {
+  // 初始化页面状态
+  loadPersistedState();
 
+  // 确保一进来就是干净的，且根据 state.chatMode 隐藏/显示面板
+  triggerGlobalCleanup();
+});
 // 前端主控脚本：负责会话状态管理、消息渲染、SSE 流式接收。
 const STORAGE_KEY = "agent_ui_chat_sessions_v2";
 
@@ -327,6 +333,7 @@ function syncModeUi() {
   }
 
   if (fileUploadBtn) {
+    fileUploadBtn.style.display = isExpert ? "inline-flex" : "none";
     fileUploadBtn.classList.remove("active");
     fileUploadBtn.setAttribute("aria-pressed", "false");
     fileUploadBtn.title = "Click to upload files";
@@ -335,12 +342,14 @@ function syncModeUi() {
   renderUploadedFiles();
 
   if (sqlAnalysisToggleBtn) {
+    sqlAnalysisToggleBtn.style.display = isExpert ? "inline-flex" : "none";
     sqlAnalysisToggleBtn.classList.toggle("active", state.sqlAnalysisEnabled);
     sqlAnalysisToggleBtn.setAttribute("aria-pressed", String(state.sqlAnalysisEnabled));
     sqlAnalysisToggleBtn.title = state.sqlAnalysisEnabled ? "Click to disable SQL Analysis" : "Click to enable SQL Analysis";
   }
 
   if (edaAnalysisToggleBtn) {
+    edaAnalysisToggleBtn.style.display = isExpert ? "inline-flex" : "none";
     edaAnalysisToggleBtn.classList.toggle("active", state.edaAnalysisEnabled);
     edaAnalysisToggleBtn.setAttribute("aria-pressed", String(state.edaAnalysisEnabled));
     edaAnalysisToggleBtn.title = state.edaAnalysisEnabled ? "Click to disable EDA Analysis" : "Click to enable EDA Analysis";
@@ -1521,7 +1530,7 @@ function setConversationUsage(conversationId, usage) {
 
 function renderTaskStatusPanel() {
   if (!taskStatusPane || !taskStatusList) return;
-  if (!canShowSidePane()) {
+  if (state.chatMode !== "general" || !canShowSidePane()) {
     taskStatusPane.hidden = true;
     taskStatusList.innerHTML = "";
     if (taskStatusUsage) taskStatusUsage.textContent = "";
@@ -2340,7 +2349,7 @@ function initDbConnection() {
   });
 
   dbDisconnectBtn?.addEventListener("click", async () => {
-    if (!confirm("确定要断开连接并清除会话缓存吗？")) return;
+    if (!confirm("Are you sure you want to disconnect and clear the session cache？")) return;
 
     try {
       // 1. 断开物理连接
@@ -2359,7 +2368,7 @@ function initDbConnection() {
 
       const data = await disconnectRes.json();
       if (data.ok) {
-        alert("已断开连接并重置会话");
+        alert("Disconnected and reset session.");
         state.isDbConnected = false;
         updateDbUI();
         // 如果你有消息列表，建议这里也清空一下 UI 上的对话记录
@@ -2427,7 +2436,7 @@ function initDbConnection() {
       });
 
       if (response.ok) {
-        alert("✅ 数据库连接成功！");
+        alert("✅ Database connection succeeded！");
         state.isDbConnected = true; // 移动到这里：确保成功才置为 true
         updateDbUI();              // 移动到这里
         dbModal.hidden = true;
@@ -2437,11 +2446,11 @@ function initDbConnection() {
         state.isDbConnected = false; // 明确失败状态
         updateDbUI();
         const errDetail = await response.json();
-        alert(`❌ 连接失败: ${JSON.stringify(errDetail.detail)}`);
+        alert(`❌ Connection failed: ${JSON.stringify(errDetail.detail)}`);
       }
     } catch (err) {
       console.error("Network error:", err);
-      alert("网络错误，无法连接服务器。");
+      alert("Network error, unable to connect to the server.");
     }
   });
 }
@@ -2697,7 +2706,7 @@ async function submitMessage(text, options = {}, uiOptions = {}) {
   const hideUserMessage = Boolean(uiOptions.hideUserMessage);
   const pendingLabel = typeof uiOptions.pendingLabel === "string" && uiOptions.pendingLabel.trim()
     ? uiOptions.pendingLabel
-    : "思考中 · 路由中";
+    : "Thinking · Routing";
   const requestMode = uiOptions.mode === "expert" ? "expert" : state.chatMode === "expert" ? "expert" : "general";
   const requestGeneralModel = isValidGeneralModel(uiOptions.generalModel)
     ? uiOptions.generalModel
@@ -2848,7 +2857,7 @@ composerInput.addEventListener("input", autoResizeTextarea);
 // 新聊天按钮
 newChatBtn.addEventListener("click", async () => {
   createConversation();
-
+  triggerGlobalCleanup();
   // Keep frontend upload state isolated for the new conversation.
   state.uploadedFiles = [];
   state.file_name = "";
@@ -2882,12 +2891,14 @@ modelSwitch?.addEventListener("click", () => {
 // 点击后切换到专家模式，并更新欢迎语。
 taskChipBtn?.addEventListener("click", () => {
   state.chatMode = state.chatMode === "expert" ? "general" : "expert";
+
   if (state.chatMode !== "expert") {
     state.edaAnalysisEnabled = false;
     state.sqlAnalysisEnabled = false;
   } else {
     state.generalCapabilityPreset = "";
   }
+
   renderAll();
   persistState();
 });

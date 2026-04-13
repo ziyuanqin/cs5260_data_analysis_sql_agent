@@ -12,9 +12,14 @@ This quickstart explains how to use the `expert` data-analysis workflow, where t
   - Cleaning instructions (for example: `drop duplicates`, `fill NaN`)
   - Custom EDA requests (for example: histogram, correlation)
   - `rerun eda` to regenerate report
+- Data access (SQL):
+  - CSV/Excel: Data cleaning and format conversion → Stored in SQLite → Data destroyed.
+  - MySQL: Connect to the user's local database. User provides user_name, password (encrypted transmission), etc
 - SQL analysis:
-  - Database connection flow (MySQL)
-  - SQL generation and analysis response
+  - Schema Awareness: Automatically detects table structures, column types, primary keys, and foreign keys to ensure SQL accuracy.
+  - Domain-Specific Logic: Integrates specialized knowledge (e.g., E-commerce, Finance) to calculate complex business metrics.
+  - Intent Classification: Automatically distinguishes between "Advice" (strategy suggestions) and "Query" (data retrieval).
+  - Self-Correction: Features an automated retry loop that captures database errors and re-generates fixed SQL (up to 2 retries).
 
 ## 2. Where to configure API keys
 
@@ -51,8 +56,12 @@ Recommended practice:
 
 1. Switch to `Expert Mode`.
 2. Enable `SQL Analysis`.
-3. Optional: connect DB from `Database Connection`.
-4. Ask natural-language SQL tasks.
+3. Uploaded files
+4. Optional: connect DB from `Database Connection`.
+5. Ask natural-language SQL tasks.
+   - Strategic Questions: "What can you do with this data?" (Triggers Advice Mode - no SQL execution).
+   - Data Requests: "Show me the top 5 products by revenue growth." (Triggers Query Mode - SQL execution + Analysis).
+   - Security Enforcement: Requests like "Drop the users table" are automatically blocked by the Violation Intent guardrail.
 
 ## 5. General vs Expert boundary
 
@@ -71,3 +80,4 @@ Keep these boundaries to avoid feature collisions.
 - The backend supports multiple sessions (`session_id`) in parallel.
 - Frontend currently allows one active streaming request per browser tab.
 - Use multiple tabs/windows for true concurrent conversations.
+- All data files are destroyed after the conversation.
