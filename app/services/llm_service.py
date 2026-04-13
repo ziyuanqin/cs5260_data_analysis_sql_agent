@@ -77,16 +77,16 @@ _SLIDE_KEYWORDS = (
 )
 _CAPABILITY_TASK_TEMPLATES: dict[str, list[str]] = {
     "website_builder": [
-        "规划信息架构与页面区块",
-        "编写完整 HTML/CSS/JS 代码",
-        "部署网站并验证效果",
-        "整理交付文档并发送结果",
+        "Plan the information architecture and page sections",
+        "Implement complete HTML/CSS/JS",
+        "Deploy and validate the website",
+        "Prepare delivery notes and provide final output",
     ],
     "slide_builder": [
-        "确定受众与演示结构（页数与章节）",
-        "生成每页标题、要点与讲稿备注",
-        "产出可预览 HTML slides 与下载文件",
-        "整理交付说明并发送结果",
+        "Define audience and presentation structure (sections and slide count)",
+        "Generate slide titles, key points, and speaker notes",
+        "Produce previewable HTML slides and downloadable files",
+        "Prepare delivery notes and provide final output",
     ],
 }
 
@@ -226,7 +226,8 @@ class ChatService:
         if provider or model:
             return self._resolve_provider_name(provider), model
 
-        alias = str((provider_options or {}).get("general_model", "")).strip().lower()
+        raw_alias = str((provider_options or {}).get("general_model", "")).strip()
+        alias = raw_alias.lower()
         if alias == "openai":
             return self.config.general_openai_provider, self.config.general_openai_model_name
         if alias == "deepseek":
@@ -235,13 +236,16 @@ class ChatService:
             return self.config.general_deepseek_provider, self.config.general_deepseek_model_name
         if alias in {"huggingface", "qwen", "hf"}:
             return "huggingface", self.config.huggingface_model_name
+        # Allow passing raw model IDs via general_model (routed to Hugging Face router).
+        if raw_alias:
+            return "huggingface", raw_alias
 
         return self._resolve_provider_name(None), None
 
     def _system_prompt(self, mode: str) -> str:
         if mode == "expert":
-            return "你是数据分析专家助手。回答要结构化、可执行，并尽量给出关键结论。"
-        return "你是执行型 AI Agent。请尽量产出可执行、可验证、可落地的答案。"
+            return "You are a data analysis expert assistant. Provide structured, actionable answers with key conclusions."
+        return "You are an execution-focused AI agent. Provide actionable, verifiable, and practical outputs."
 
     def _append_session_message(self, session_id: str, role: str, content: str) -> None:
         if not content:
@@ -393,10 +397,8 @@ class ChatService:
 
     def _fallback_website_files(self, user_message: str) -> dict[str, str]:
         title = "AI Agent Project Showcase"
-        if "AI Agent" in user_message:
-            title = "AI Agent 项目展示"
         index_html = f"""<!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -407,28 +409,28 @@ class ChatService:
   <header class="nav">
     <div class="brand">{title}</div>
     <nav>
-      <a href="#hero">首页</a>
-      <a href="#features">功能</a>
-      <a href="#contact">联系</a>
+      <a href="#hero">Home</a>
+      <a href="#features">Features</a>
+      <a href="#contact">Contact</a>
     </nav>
   </header>
   <main>
     <section id="hero" class="hero">
       <h1>{title}</h1>
-      <p>这是一个可快速复用的单页网站模板，包含信息架构、视觉层级与移动端适配。</p>
+      <p>A reusable one-page website template with clear information architecture, hierarchy, and mobile responsiveness.</p>
     </section>
     <section id="features" class="section">
-      <h2>核心区块</h2>
+      <h2>Core Sections</h2>
       <ul>
-        <li>导航栏：快速定位主要内容。</li>
-        <li>英雄区：传达核心价值与行动入口。</li>
-        <li>功能区：展示能力与场景。</li>
-        <li>联系区：提供反馈与合作入口。</li>
+        <li>Navigation bar: quick access to key sections.</li>
+        <li>Hero section: communicate core value and call to action.</li>
+        <li>Feature section: present capabilities and scenarios.</li>
+        <li>Contact section: provide feedback and collaboration channels.</li>
       </ul>
     </section>
     <section id="contact" class="section">
-      <h2>本地运行</h2>
-      <p>直接双击打开 <code>index.html</code> 即可预览页面。</p>
+      <h2>Local Run</h2>
+      <p>Open <code>index.html</code> directly to preview the page.</p>
     </section>
   </main>
 </body>
@@ -481,11 +483,9 @@ Open `index.html` directly in your browser.
         return {"index.html": index_html, "style.css": style_css, "README.md": readme}
 
     def _fallback_slide_files(self, user_message: str) -> dict[str, str]:
-        title = "Manus-like Agent 架构评审"
-        if "架构" not in user_message:
-            title = "AI Agent Presentation"
+        title = "AI Agent Architecture Review"
         slides_html = f"""<!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -498,18 +498,18 @@ Open `index.html` directly in your browser.
   </style>
 </head>
 <body>
-  <section class="slide"><div><h1>{title}</h1><p>目标：展示系统架构、执行链路与交付能力。</p></div></section>
-  <section class="slide"><div><h2>系统拓扑</h2><p>Router -> Planner -> Executor -> Reviewer -> Summarizer。</p></div></section>
-  <section class="slide"><div><h2>能力演示</h2><p>Website/Slides 自动产出 + Artifact 下载与预览。</p></div></section>
+  <section class="slide"><div><h1>{title}</h1><p>Goal: present architecture, execution flow, and delivery capability.</p></div></section>
+  <section class="slide"><div><h2>System Topology</h2><p>Router -> Planner -> Executor -> Reviewer -> Summarizer.</p></div></section>
+  <section class="slide"><div><h2>Capability Demo</h2><p>Automatic Website/Slides generation with artifact download and preview.</p></div></section>
 </body>
 </html>
 """
         notes = """# Speaker Notes
 
-1. 背景与目标
-2. 统一路由与状态流
-3. 任务执行与评审闭环
-4. 文件交付与可追溯性
+1. Background and goals
+2. Unified routing and state flow
+3. Task execution and review loop
+4. File delivery and traceability
 """
         return {"slides.html": slides_html, "speaker_notes.md": notes}
 
@@ -1008,11 +1008,11 @@ Open `index.html` directly in your browser.
         projected_tokens, projected_cost = self._projected_usage(session_id, model_name, extra_tokens)
         if projected_tokens > self.config.session_token_budget:
             raise BudgetExceededError(
-                f"会话预算已达到 token 上限 ({self.config.session_token_budget})，请重置会话或缩短请求。"
+                f"Session token budget reached ({self.config.session_token_budget}). Please reset the session or shorten the request."
             )
         if projected_cost > self.config.session_cost_budget_usd:
             raise BudgetExceededError(
-                f"会话预算已达到费用上限 (${self.config.session_cost_budget_usd:.2f})，请重置会话或缩短请求。"
+                f"Session cost budget reached (${self.config.session_cost_budget_usd:.2f}). Please reset the session or shorten the request."
             )
 
     def _commit_usage(self, session_id: str, model_name: str, input_tokens: int, output_tokens: int) -> None:
@@ -1163,7 +1163,27 @@ Open `index.html` directly in your browser.
             normalized_requested = requested_model.strip()
             if normalized_requested:
                 # Respect explicit routing from caller (e.g. General model selector).
-                return [normalized_requested]
+                # Also append safe fallbacks to prevent hard failures when a selected
+                # model is temporarily unavailable or lacks access permission.
+                candidates = [normalized_requested]
+                if provider_name == "openai_compatible":
+                    for extra in (
+                        self.config.general_openai_model_name,
+                        self.config.openai_model_name,
+                        self.config.fallback_model_name,
+                    ):
+                        normalized_extra = str(extra or "").strip()
+                        if normalized_extra and normalized_extra not in candidates:
+                            candidates.append(normalized_extra)
+                if provider_name == "huggingface":
+                    for extra in (
+                        self.config.huggingface_model_name,
+                        self.config.fallback_model_name,
+                    ):
+                        normalized_extra = str(extra or "").strip()
+                        if normalized_extra and normalized_extra not in candidates:
+                            candidates.append(normalized_extra)
+                return candidates
 
         candidates: list[str] = []
 
@@ -1218,6 +1238,11 @@ Open `index.html` directly in your browser.
         provider_impl = self.provider_registry.get(provider_name)
         input_tokens = self._estimate_tokens_messages(messages)
         last_error: Exception | None = None
+        request_timeout = self.config.request_timeout
+        if provider_name == "huggingface":
+            # Keep HF router requests responsive in general-mode multi-model fallback.
+            # Without this cap, one unavailable model can block the UI for a long time.
+            request_timeout = min(request_timeout, 25)
 
         for candidate in model_candidates:
             for attempt in range(_MODEL_EMPTY_OUTPUT_RETRY_LIMIT + 1):
@@ -1228,7 +1253,7 @@ Open `index.html` directly in your browser.
                     stream = provider_impl.stream_chat(
                         model=candidate,
                         messages=messages,
-                        timeout=self.config.request_timeout,
+                        timeout=request_timeout,
                         provider_options=provider_options,
                     )
 
@@ -1263,7 +1288,7 @@ Open `index.html` directly in your browser.
                             input_tokens=input_tokens,
                             output_tokens=output_tokens,
                         )
-                        raise RuntimeError(f"模型 {candidate} 流式输出中断：{str(exc)}") from exc
+                        raise RuntimeError(f"Streaming output interrupted for model {candidate}: {str(exc)}") from exc
 
                     category = self._classify_error(exc)
                     can_retry_same_model = (
@@ -1283,8 +1308,8 @@ Open `index.html` directly in your browser.
                     break
 
         if last_error is None:
-            raise RuntimeError("未找到可用模型。")
-        raise RuntimeError(f"所有候选模型均失败：{str(last_error)}") from last_error
+            raise RuntimeError("No available model found.")
+        raise RuntimeError(f"All candidate models failed: {str(last_error)}") from last_error
 
     def _stream_chunks_with_cross_provider_fallback(
         self,
@@ -1330,8 +1355,8 @@ Open `index.html` directly in your browser.
                 continue
 
         if last_error is None:
-            raise RuntimeError("未找到可用模型。")
-        raise RuntimeError(f"所有候选 provider 均失败：{str(last_error)}") from last_error
+            raise RuntimeError("No available model found.")
+        raise RuntimeError(f"All candidate providers failed: {str(last_error)}") from last_error
 
     def _complete_with_fallback(
         self,
@@ -1545,11 +1570,11 @@ Open `index.html` directly in your browser.
             # Hide large inline code blocks in capability delivery replies.
             replaced = re.sub(
                 r"```[\s\S]*?```",
-                "（代码内容已保存为文件，可在下方文件卡片中预览或下载。）",
+                "(Code content has been saved to files. You can preview or download it from the file cards below.)",
                 raw,
             )
             replaced = re.sub(r"\n{3,}", "\n\n", replaced).strip()
-            return replaced or "任务完成，已生成可预览与可下载文件。"
+            return replaced or "Task completed. Previewable and downloadable files have been generated."
 
         def summarize_tool_meta(tool_meta: dict[str, Any] | None) -> str:
             if not isinstance(tool_meta, dict):
@@ -1562,8 +1587,8 @@ Open `index.html` directly in your browser.
             if status and status != "ok":
                 error_text = compact_text(tool_meta.get("error", ""), max_chars=180)
                 if error_text:
-                    return f"工具 {tool_name} 执行失败：{error_text}"
-                return f"工具 {tool_name} 执行失败"
+                    return f"Tool {tool_name} failed: {error_text}"
+                return f"Tool {tool_name} failed"
 
             if tool_name == "file_write":
                 artifact_meta = tool_meta.get("artifact")
@@ -1572,32 +1597,32 @@ Open `index.html` directly in your browser.
                         artifact_meta.get("relative_path") or artifact_meta.get("name") or ""
                     ).strip()
                     if relative_path:
-                        return f"已生成文件：{relative_path}"
+                        return f"Generated file: {relative_path}"
                 source = str(tool_meta.get("source") or "").strip()
                 if source:
-                    return f"已生成文件：{source}"
-                return "已完成文件写入"
+                    return f"Generated file: {source}"
+                return "File write completed"
 
             if tool_name == "file_read":
                 source = str(tool_meta.get("source") or "").strip()
-                return f"已读取文件：{source}" if source else "已完成文件读取"
+                return f"Read file: {source}" if source else "File read completed"
 
             if tool_name == "web_search":
                 query = str(tool_meta.get("input") or "").strip()
-                return f"已完成网页搜索：{query}" if query else "已完成网页搜索"
+                return f"Web search completed: {query}" if query else "Web search completed"
 
             if tool_name == "web_read":
                 source = str(tool_meta.get("source") or tool_meta.get("input") or "").strip()
-                return f"已读取网页：{source}" if source else "已读取网页内容"
+                return f"Read web page: {source}" if source else "Web page read completed"
 
-            return f"已完成工具调用：{tool_name}"
+            return f"Tool call completed: {tool_name}"
 
         def summarize_step_result_text(raw_result: Any) -> str:
             text = str(raw_result or "").strip()
             if not text:
                 return ""
             if text.lower() == "step executed.":
-                return "步骤执行完成。"
+                return "Step executed."
 
             path_hits = re.findall(r'([A-Za-z0-9._-]+\.(?:html|css|js|md|json|txt|csv|py))', text, flags=re.IGNORECASE)
             unique_paths: list[str] = []
@@ -1606,7 +1631,7 @@ Open `index.html` directly in your browser.
                 if normalized and normalized not in unique_paths:
                     unique_paths.append(normalized)
             if unique_paths:
-                return f"已生成文件：{', '.join(unique_paths[:3])}"
+                return f"Generated files: {', '.join(unique_paths[:3])}"
 
             lower = text.lower()
             if (
@@ -1615,7 +1640,7 @@ Open `index.html` directly in your browser.
                 or "```" in text
                 or len(text) > 260
             ):
-                return "步骤执行完成（产出内容较长，已转为文件交付）。"
+                return "Step executed (long output was converted to file deliverables)."
 
             return compact_text(text, max_chars=180)
 
@@ -1639,7 +1664,7 @@ Open `index.html` directly in your browser.
                     if task_preview_items:
                         task_preview = "\n" + "\n".join(task_preview_items)
                     event_payload = self._make_status_token_event(
-                        delta=f"[planner] 已生成/修订步骤，当前步骤数：{task_count}{task_preview}\n",
+                        delta=f"[planner] Planned/revised steps. Current step count: {task_count}{task_preview}\n",
                         session_id=session_id,
                         stage="planner",
                         model=planner_model,
@@ -1680,11 +1705,11 @@ Open `index.html` directly in your browser.
                             current_step_result = summarize_step_result_text(current_item.get("result", ""))
                     if tool_result_summary:
                         current_step_result = tool_result_summary
-                    executor_lines = [f"[executor] 已执行步骤：{done_count}"]
+                    executor_lines = [f"[executor] Executed steps: {done_count}"]
                     if current_step_task:
-                        executor_lines.append(f"当前步骤：{current_step_task}")
+                        executor_lines.append(f"Current step: {current_step_task}")
                     if current_step_result:
-                        executor_lines.append(f"执行结果：{current_step_result}")
+                        executor_lines.append(f"Result: {current_step_result}")
                     event_payload = self._make_status_token_event(
                         delta="\n".join(executor_lines) + "\n",
                         session_id=session_id,
@@ -1697,7 +1722,7 @@ Open `index.html` directly in your browser.
                     )
                     self._record_task_event(session_id, event_payload["payload"])
                     yield event_payload
-                    executor_progress = current_step_task or "执行步骤"
+                    executor_progress = current_step_task or "Execute step"
                     if current_step_result:
                         executor_progress = f"{executor_progress} -> {compact_text(current_step_result, max_chars=140)}"
                     yield self._make_progress_token_event(
@@ -1798,16 +1823,16 @@ Open `index.html` directly in your browser.
                     pass_like = feedback_text.upper().startswith("PASS")
                     if pass_like:
                         if current_step_task:
-                            review_message = f"PASS：步骤“{current_step_task}”已通过评审，可进入下一步。"
+                            review_message = f"PASS: Step \"{current_step_task}\" passed review and can move to the next step."
                         else:
-                            review_message = "PASS：该步骤已通过评审，可进入下一步。"
+                            review_message = "PASS: This step passed review and can move to the next step."
                     else:
                         review_parts = [feedback_text] if feedback_text else []
                         if current_step_task:
-                            review_parts.append(f"步骤: {current_step_task}")
+                            review_parts.append(f"Step: {current_step_task}")
                         if review_decision:
-                            review_parts.append(f"决策: {review_decision}")
-                        review_message = " | ".join(review_parts) if review_parts else "评审完成"
+                            review_parts.append(f"Decision: {review_decision}")
+                        review_message = " | ".join(review_parts) if review_parts else "Review completed"
                     review_event = self._make_status_token_event(
                         delta=f"[reviewer] {review_message} (retry={retries})\n",
                         session_id=session_id,
@@ -1841,7 +1866,7 @@ Open `index.html` directly in your browser.
                             "payload": {"delta": final_text},
                         }
                         yield self._make_progress_token_event(
-                            delta="Summarizer: 已完成最终汇总。\n",
+                            delta="Summarizer: Final summary completed.\n",
                             session_id=session_id,
                             stage="summarizer",
                             model=(node_output.get("selected_models", {}) or {}).get("summarizer"),
@@ -1871,10 +1896,10 @@ Open `index.html` directly in your browser.
             text = _last_ai_message(state)
             if text and text.strip():
                 return text
-            return "EDA 分析完成，请查看报告或继续提问。"
+            return "EDA analysis completed. Please review the report or continue asking questions."
         except Exception as exc:
             logger.exception("EDA local chat failed: session_id=%s", session_id)
-            return f"抱歉，数据分析模块暂时无法响应: {str(exc)}"
+            return f"Sorry, the data analysis module is temporarily unavailable: {str(exc)}"
 
     async def _run_sql_analysis(
         self,

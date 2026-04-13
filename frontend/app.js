@@ -39,7 +39,6 @@ const evidenceList = document.getElementById("evidenceList");
 const evidenceToggleBtn = document.getElementById("evidenceToggleBtn");
 const taskChipBtn = document.getElementById("taskChipBtn");
 const webSearchToggleBtn = document.getElementById("webSearchToggleBtn");
-const webReadToggleBtn = document.getElementById("webReadToggleBtn");
 const fileAccessToggleBtn = document.getElementById("fileAccessToggleBtn");
 const generalCapabilityRow = document.getElementById("generalCapabilityRow");
 const websiteBuilderBtn = document.getElementById("websiteBuilderBtn");
@@ -52,9 +51,9 @@ const sqlAnalysisToggleBtn = document.getElementById("sqlAnalysisToggleBtn");
 const modelSwitch = document.querySelector(".model-switch");
 
 const GENERAL_MODELS = [
-  { id: "deepseek", label: "DeepSeek" },
-  { id: "openai", label: "OpenAI" },
-  { id: "huggingface", label: "HuggingFace (Qwen)" },
+  { id: "zai-org/GLM-5.1:together", label: "GLM 5.1" },
+  { id: "deepseek-ai/DeepSeek-R1:novita", label: "DeepSeek R1" },
+  { id: "openai/gpt-oss-120b:groq", label: "GPT-OSS 120B" },
 ];
 
 function isValidGeneralModel(modelId) {
@@ -63,7 +62,7 @@ function isValidGeneralModel(modelId) {
 
 function getGeneralModelLabel(modelId) {
   const hit = GENERAL_MODELS.find((item) => item.id === modelId);
-  return hit ? hit.label : "DeepSeek";
+  return hit ? hit.label : "GLM 5.1";
 }
 
 //Database Connection
@@ -96,10 +95,9 @@ const state = {
   isStreaming: false,
   // UI 模式：点击专家模式按钮后切换欢迎语。
   chatMode: "general",
-  generalModel: "deepseek",
+  generalModel: "zai-org/GLM-5.1:together",
   generalCapabilityPreset: "",
   webSearchEnabled: false,
-  webReadEnabled: false,
   fileAccessEnabled: false,
   uploadedFiles: [],
   edaAnalysisEnabled: false,
@@ -139,7 +137,7 @@ async function triggerGlobalCleanup() {
 }
 
 function getGeneralModelText() {
-  const selected = isValidGeneralModel(state.generalModel) ? state.generalModel : "deepseek";
+  const selected = isValidGeneralModel(state.generalModel) ? state.generalModel : GENERAL_MODELS[0].id;
   return `General Mode: ${getGeneralModelLabel(selected)}`;
 }
 
@@ -311,7 +309,7 @@ function getModeGreetingText() {
 function syncModeUi() {
   const isExpert = state.chatMode === "expert";
   if (!isValidGeneralModel(state.generalModel)) {
-    state.generalModel = "deepseek";
+    state.generalModel = "zai-org/GLM-5.1:together";
   }
 
   const dbSidebarSection = document.querySelector(".sidebar-footer"); // 选中包含按钮的父容器
@@ -370,13 +368,6 @@ function syncModeUi() {
     slideBuilderBtn.title = active ? "Click to cancel Slide Builder preset" : "Click to enable Slide Builder preset";
   }
 
-  if (webReadToggleBtn) {
-    const isGeneral = !isExpert;
-    webReadToggleBtn.style.display = isGeneral ? "inline-flex" : "none";
-    webReadToggleBtn.classList.toggle("active", isGeneral && state.webReadEnabled);
-    webReadToggleBtn.setAttribute("aria-pressed", String(isGeneral && state.webReadEnabled));
-    webReadToggleBtn.title = state.webReadEnabled ? "Click to disable Web Read" : "Click to enable Web Read";
-  }
 
   if (fileAccessToggleBtn) {
     const isGeneral = !isExpert;
@@ -473,7 +464,7 @@ function condenseAssistantTextForArtifacts(text, artifacts) {
     return raw;
   }
   // When files are already generated, avoid dumping full source code in chat bubble.
-  const replaced = raw.replace(/```[\s\S]*?```/g, "（代码内容已保存为文件，请使用下方文件卡片进行预览或下载。）");
+  const replaced = raw.replace(/```[\s\S]*?```/g, "(Code content has been saved to files. Please preview or download it from the file cards below.)");
   return replaced.replace(/\n{3,}/g, "\n\n").trim();
 }
 
@@ -519,7 +510,7 @@ function normalizeLastRequest(rawLastRequest) {
     mode: rawLastRequest.mode === "expert" ? "expert" : "general",
     generalModel: isValidGeneralModel(rawLastRequest.generalModel)
       ? rawLastRequest.generalModel
-      : "deepseek",
+      : GENERAL_MODELS[0].id,
     timestamp: Number(rawLastRequest.timestamp || Date.now()),
   };
 }
@@ -1147,7 +1138,7 @@ function renderRuntimeTaskItems(taskItems, isPending = false) {
     .join("");
   return `
     <div class="runtime-task-wrap">
-      <div class="runtime-section-title">任务进度</div>
+      <div class="runtime-section-title">Task Progress</div>
       <div class="runtime-task-list">${rows}</div>
     </div>
   `;
@@ -1160,8 +1151,8 @@ function renderRuntimeArtifacts(conversationId, artifacts) {
   return `
     <div class="runtime-artifact-wrap">
       <div class="runtime-artifact-top">
-        <div class="runtime-section-title">交付文件</div>
-        <button class="runtime-artifact-btn ghost" type="button" data-artifact-bundle="1" data-session-id="${escapedSession}">下载全部 ZIP</button>
+        <div class="runtime-section-title">Deliverables</div>
+        <button class="runtime-artifact-btn ghost" type="button" data-artifact-bundle="1" data-session-id="${escapedSession}">Download ZIP</button>
       </div>
       <div class="artifact-icon-grid">${tiles}</div>
     </div>
@@ -1175,8 +1166,8 @@ function renderAssistantArtifactCards(conversationId, artifacts) {
   return `
     <section class="assistant-artifacts">
       <div class="assistant-artifacts-head">
-        <span>交付文件</span>
-        <button class="runtime-artifact-btn ghost" type="button" data-artifact-bundle="1" data-session-id="${escapedSession}">下载全部 ZIP</button>
+        <span>Deliverables</span>
+        <button class="runtime-artifact-btn ghost" type="button" data-artifact-bundle="1" data-session-id="${escapedSession}">Download ZIP</button>
       </div>
       <div class="assistant-artifact-grid">${tiles}</div>
     </section>
@@ -1195,10 +1186,10 @@ function renderAgentRuntimeCard(runtime, conversationId, usage, isPending = fals
   const capabilityText = normalized.capability ? ` · ${normalized.capability}` : "";
   const runningItem = normalized.taskItems.find((item) => item.status === "running");
   const summaryText = runningItem
-    ? `正在执行：${runningItem.title}`
+    ? `Running: ${runningItem.title}`
     : normalized.taskItems.length > 0
-      ? "任务步骤已规划，持续执行中"
-      : "任务执行中";
+      ? "Task plan is ready and running"
+      : "Task in progress";
   const logLines = normalized.progressLogs.slice(-8);
   const logs = hasLogs
     ? logLines
@@ -1232,20 +1223,20 @@ function buildPendingLabelFromMeta(meta) {
   const taskItems = normalizeTaskItems(meta?.task_items);
   const runningItem = taskItems.find((item) => item.status === "running");
   const stageMap = {
-    router: "路由中",
-    planner: "规划中",
-    executor: "执行中",
-    reviewer: "评审中",
-    summarizer: "汇总中",
-    tool: "工具处理中",
-    artifact: "文件生成中",
-    budget: "预算检查中",
+    router: "Routing",
+    planner: "Planning",
+    executor: "Executing",
+    reviewer: "Reviewing",
+    summarizer: "Summarizing",
+    tool: "Tool Processing",
+    artifact: "Generating Artifacts",
+    budget: "Budget Check",
   };
-  const stageText = stageMap[stage] || "思考中";
+  const stageText = stageMap[stage] || "Thinking";
   if (runningItem && runningItem.title) {
-    return `思考中 · ${stageText}：${runningItem.title}`;
+    return `Thinking · ${stageText}: ${runningItem.title}`;
   }
-  return `思考中 · ${stageText}`;
+  return `Thinking · ${stageText}`;
 }
 
 // 自动根据内容调整输入框高度
@@ -1256,7 +1247,7 @@ function autoResizeTextarea() {
 
 // 工具：截断标题，避免历史栏过长
 function shortTitle(text, max = 18) {
-  if (!text) return "未命名聊天";
+  if (!text) return "Untitled Chat";
   return text.length > max ? `${text.slice(0, max)}...` : text;
 }
 
@@ -1341,21 +1332,21 @@ function normalizeStatusMessage(stage, message) {
 
     if (tool === "file_write") {
       const path = typeof input === "object" && input ? String(input.path || "").trim() : "";
-      return path ? `已写入文件：${path}` : "已调用文件写入工具";
+      return path ? `Wrote file: ${path}` : "Called file_write tool";
     }
     if (tool === "file_read") {
       const target = typeof input === "string" ? input.trim() : (typeof input === "object" && input ? String(input.path || input.file || "").trim() : "");
-      return target ? `已读取文件：${target}` : "已调用文件读取工具";
+      return target ? `Read file: ${target}` : "Called file_read tool";
     }
     if (tool === "web_search") {
       const query = typeof input === "string" ? input.trim() : "";
-      return query ? `已执行网页搜索：${query}` : "已执行网页搜索";
+      return query ? `Web search completed: ${query}` : "Web search completed";
     }
     if (tool === "web_read") {
       const url = typeof input === "string" ? input.trim() : "";
-      return url ? `已读取网页内容：${url}` : "已读取网页内容";
+      return url ? `Fetched web page: ${url}` : "Fetched web page";
     }
-    return tool ? `已调用工具：${tool}` : "";
+    return tool ? `Tool called: ${tool}` : "";
   };
 
   if (normalizedStage === "router") {
@@ -1370,7 +1361,7 @@ function normalizeStatusMessage(stage, message) {
   }
 
   if (normalizedStage === "planner") {
-    const previewMatch = cleaned.match(/预览[:：]\s*([\s\S]+)$/u);
+    const previewMatch = cleaned.match(/preview[:：]\s*([\s\S]+)$/iu);
     if (!previewMatch) return cleaned;
     const beforePreview = cleaned.slice(0, previewMatch.index).trim().replace(/[；;:：]\s*$/, "");
     const previewRaw = previewMatch[1] || "";
@@ -1379,13 +1370,13 @@ function normalizeStatusMessage(stage, message) {
       .map((item) => item.trim())
       .filter(Boolean);
     const previewText = items.length ? items.map((item) => `- ${item}`).join("\n") : compactText(previewRaw, 400);
-    return [beforePreview, "任务预览：", previewText].filter(Boolean).join("\n");
+    return [beforePreview, "Task preview:", previewText].filter(Boolean).join("\n");
   }
 
   if (normalizedStage === "executor") {
     const normalized = cleaned
       .replace(/[|｜]/g, "\n")
-      .replace(/[；;]\s*(?=(?:步骤|当前步骤|执行结果|结果)[:：])/g, "\n");
+      .replace(/[；;]\s*(?=(?:Executed Steps|Current Step|Result)[:：])/gi, "\n");
     const rawLines = normalized
       .split(/\n+/)
       .map((line) => line.trim())
@@ -1397,19 +1388,19 @@ function normalizeStatusMessage(stage, message) {
 
     for (const line of rawLines) {
       const plain = line.replace(/^\[[^\]]+\]\s*/u, "").trim();
-      const doneMatch = plain.match(/^已执行步骤[:：]\s*(\d+)/u);
+      const doneMatch = plain.match(/^Executed\s*Steps?[:：]\s*(\d+)/iu);
       if (doneMatch) {
         doneCount = doneMatch[1];
         continue;
       }
 
-      const stepMatch = plain.match(/^(?:当前)?步骤[:：]\s*(.+)$/u);
+      const stepMatch = plain.match(/^Current\s*Step[:：]\s*(.+)$/iu);
       if (stepMatch) {
         stepCandidates.push(stepMatch[1].trim());
         continue;
       }
 
-      const resultMatch = plain.match(/^(?:执行)?结果[:：]\s*(.+)$/u);
+      const resultMatch = plain.match(/^Result[:：]\s*(.+)$/iu);
       if (resultMatch) {
         resultCandidates.push(resultMatch[1].trim());
         continue;
@@ -1450,9 +1441,9 @@ function normalizeStatusMessage(stage, message) {
     );
 
     const lines = [];
-    if (doneCount) lines.push(`已执行步骤：${doneCount}`);
-    if (steps.length > 0) lines.push(`当前步骤：${steps[0]}`);
-    if (humanResults.length > 0) lines.push(`执行结果：${humanResults[0]}`);
+    if (doneCount) lines.push(`Executed steps: ${doneCount}`);
+    if (steps.length > 0) lines.push(`Current step: ${steps[0]}`);
+    if (humanResults.length > 0) lines.push(`Result: ${humanResults[0]}`);
     return lines.length ? lines.join("\n") : cleaned;
   }
 
@@ -1465,16 +1456,16 @@ function normalizeStatusMessage(stage, message) {
       const label = passFail[1].toUpperCase();
       const detail = cleanedNoRetry && cleanedNoRetry.toUpperCase() !== label ? cleanedNoRetry : "";
       if (label === "PASS") {
-        const base = detail || "评审通过：该步骤已满足目标";
-        return retryCount !== null ? `${base}（重试 ${retryCount} 次）` : base;
+        const base = detail || "Review passed: this step meets the goal";
+        return retryCount !== null ? `${base} (retry ${retryCount})` : base;
       }
       if (label === "FAIL") {
-        const base = detail || "评审未通过：该步骤需要修订";
-        return retryCount !== null ? `${base}（重试 ${retryCount} 次）` : base;
+        const base = detail || "Review failed: this step needs revision";
+        return retryCount !== null ? `${base} (retry ${retryCount})` : base;
       }
     }
     const reviewLabel = passFail ? passFail[1].toUpperCase() : "REVIEW";
-    const retryText = retryCount !== null ? `重试次数：${retryCount}` : "";
+    const retryText = retryCount !== null ? `Retry count: ${retryCount}` : "";
     return [reviewLabel, retryText, cleanedNoRetry || cleaned].filter(Boolean).join(" | ");
   }
 
@@ -1491,8 +1482,6 @@ function formatClockTime(ts) {
 
 function parseExecutorDoneCount(message) {
   const text = String(message || "");
-  const matchZh = text.match(/已执行步骤[:：]\s*(\d+)/u);
-  if (matchZh) return Number(matchZh[1]);
   const matchEn = text.match(/executed\s*steps?\s*[:：]\s*(\d+)/iu);
   if (matchEn) return Number(matchEn[1]);
   return 0;
@@ -2035,7 +2024,6 @@ function persistState() {
       chatMode: state.chatMode,
       generalModel: state.generalModel,
       webSearchEnabled: state.webSearchEnabled,
-      webReadEnabled: state.webReadEnabled,
       fileAccessEnabled: state.fileAccessEnabled,
       edaAnalysisEnabled: state.edaAnalysisEnabled,
       sqlAnalysisEnabled: state.sqlAnalysisEnabled,
@@ -2090,9 +2078,8 @@ function restoreState() {
       normalizedConversations[0].id;
     state.chatCounter = Number(parsed.chatCounter || normalizedConversations.length + 1);
     state.chatMode = parsed.chatMode === "expert" ? "expert" : "general";
-    state.generalModel = isValidGeneralModel(parsed.generalModel) ? parsed.generalModel : "deepseek";
+    state.generalModel = isValidGeneralModel(parsed.generalModel) ? parsed.generalModel : GENERAL_MODELS[0].id;
     state.webSearchEnabled = Boolean(parsed.webSearchEnabled);
-    state.webReadEnabled = Boolean(parsed.webReadEnabled);
     state.fileAccessEnabled = Boolean(parsed.fileAccessEnabled);
     state.edaAnalysisEnabled = Boolean(parsed.edaAnalysisEnabled);
     state.sqlAnalysisEnabled = Boolean(parsed.sqlAnalysisEnabled);
@@ -2178,7 +2165,7 @@ function deleteConversation(conversationId) {
 // 清除所有聊天记录
 function clearAllHistory() {
   // 确认删除
-  if (!confirm("确定要删除所有聊天记录吗？此操作无法撤销。")) {
+  if (!confirm("Delete all chat history? This action cannot be undone.")) {
     return;
   }
 
@@ -2218,8 +2205,8 @@ function renderHistory() {
     const delBtn = document.createElement("button");
     delBtn.className = "history-delete";
     delBtn.type = "button";
-    delBtn.title = "删除聊天";
-    delBtn.setAttribute("aria-label", "删除聊天");
+    delBtn.title = "Delete chat";
+    delBtn.setAttribute("aria-label", "Delete chat");
     delBtn.textContent = "✕";
     delBtn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -2358,7 +2345,7 @@ function renderMessages() {
           if (typeof persistState === "function") persistState();
           if (typeof renderAll === "function") renderAll();
 
-          console.log("已切换至 SQL 分析模式");
+          console.log("Switched to SQL analysis mode");
         });
         actions.appendChild(sqlAnalysisBtn);
       }
@@ -2480,7 +2467,7 @@ function initDbConnection() {
     };
 
     // 调试用：在控制台打印发送的内容，方便你核对
-    console.log("正在发送数据库连接请求:", payload);
+    console.log("Sending database connection request:", payload);
 
     try {
       const response = await fetch("/api/db/connect", {
@@ -2746,7 +2733,7 @@ async function streamAssistantReply(conversationId, assistantMessage, userText, 
 
       if (payload?.event === "error") {
         // 统一将服务端错误抛出给 submitMessage 处理。
-        throw new Error(payload?.payload?.message || "流式返回错误");
+        throw new Error(payload?.payload?.message || "Streaming response error");
       }
     }
   }
@@ -2820,7 +2807,7 @@ if (!hideUserMessage && /^New Chat\s\d+$/.test(convo.title)) {
     }
     assistantMessage.pending = false;
     if (!assistantMessage.text.trim()) {
-      assistantMessage.text = "模型未返回文本内容。";
+      assistantMessage.text = "Model returned no text content.";
     }
 
     const isExpertAnalysis = requestMode === "expert" && (state.edaAnalysisEnabled || state.sqlAnalysisEnabled);
@@ -2873,7 +2860,7 @@ async function rerunWithEditedLastUser(editedText, options = {}) {
     body: JSON.stringify({ session_id: convo.id }),
   });
   if (!response.ok) {
-    throw new Error(`编辑重跑失败：HTTP ${response.status}`);
+    throw new Error(`Rerun with edit failed: HTTP ${response.status}`);
   }
 
   convo.messages = convo.messages.slice(0, lastUserIndex);
@@ -2886,7 +2873,7 @@ async function rerunWithEditedLastUser(editedText, options = {}) {
   persistState();
   renderAll();
 
-  await submitMessage(editedText, options, { pendingLabel: "思考中 · 已基于编辑内容重跑" });
+  await submitMessage(editedText, options, { pendingLabel: "Thinking · Rerun from edited content" });
 }
 
 // Enter 发送，Shift+Enter 换行
@@ -2978,15 +2965,6 @@ webSearchToggleBtn?.addEventListener("click", () => {
     return;
   }
   state.webSearchEnabled = !state.webSearchEnabled;
-  renderAll();
-  persistState();
-});
-
-webReadToggleBtn?.addEventListener("click", () => {
-  if (state.chatMode !== "general") {
-    return;
-  }
-  state.webReadEnabled = !state.webReadEnabled;
   renderAll();
   persistState();
 });
@@ -3127,7 +3105,7 @@ fileUploadInput?.addEventListener("change", async () => {
     } else if (uploadEdaFailures.length > 0) {
       edaPendingMessage.text = uploadEdaFailures.join("\n");
     } else {
-      edaPendingMessage.text = "upload失败或解析失败，请重试。";
+      edaPendingMessage.text = "Upload failed or parsing failed. Please try again.";
     }
 
     if (activeConvo) {
@@ -3259,7 +3237,6 @@ composerForm.addEventListener("submit", async (e) => {
     eda_analysis: isExpertMode && !!state.edaAnalysisEnabled,
     sql_analysis: isExpertMode && !!state.sqlAnalysisEnabled,
     general_web_search: state.chatMode === "general" && !!state.webSearchEnabled,
-    general_web_read: state.chatMode === "general" && !!state.webReadEnabled,
     general_file_access: state.chatMode === "general" && !!state.fileAccessEnabled,
     general_capability:
       state.chatMode === "general" &&

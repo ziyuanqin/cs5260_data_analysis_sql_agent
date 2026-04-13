@@ -482,7 +482,7 @@ class ChatServiceTests(unittest.TestCase):
 
     def test_budget_guardrail_returns_error_event(self):
         def responder(_messages, _model, _options):
-            return "不会被调用"
+            return "should not be called"
 
         service = ChatService(make_config(session_token_budget=3))
         service.provider_registry = FakeRegistry(FakeProvider(responder))
@@ -492,14 +492,14 @@ class ChatServiceTests(unittest.TestCase):
                 service,
                 session_id="s-budget",
                 mode="general",
-                user_message="这是一个明显超过预算阈值的测试输入",
+                user_message="This input intentionally exceeds the configured budget threshold.",
                 provider="openai_compatible",
                 provider_options={"general_model": "openai"},
             )
         )
 
         self.assertEqual(events[-1]["event"], "error")
-        self.assertIn("预算", events[-1]["payload"]["message"])
+        self.assertIn("budget", events[-1]["payload"]["message"].lower())
 
     def test_general_model_alias_routes_deepseek_model(self):
         def responder(_messages, _model, _options):
