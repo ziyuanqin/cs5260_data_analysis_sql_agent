@@ -18,7 +18,7 @@
   "eda_deepseek_model_name": "deepseek-ai/DeepSeek-R1:novita",
   "agent_intent_model_name": "zai-org/GLM-5.1:together",
   "agent_planner_model_name": "zai-org/GLM-5.1:together",
-  "agent_executor_model_name": "zai-org/GLM-5.1:together",
+  "agent_executor_model_name": "openai/gpt-oss-120b:groq",
   "agent_reviewer_model_name": "zai-org/GLM-5.1:together",
   "agent_summarizer_model_name": "zai-org/GLM-5.1:together",
   "agent_max_review_retries": 2,

@@ -36,6 +36,7 @@ _STAGE_TO_MODEL_ATTR = {
     "executor": "agent_executor_model_name",
     "reviewer": "agent_reviewer_model_name",
     "summarizer": "agent_summarizer_model_name",
+    "direct": "agent_executor_model_name",
 }
 
 _PLANNING_KEYWORDS = (
@@ -2222,7 +2223,16 @@ Open `index.html` directly in your browser.
             return
 
         # expert 模式但无分析开关：仅专家直答，不进入 Manus 流程。
-        provider_name = self._resolve_provider_name(provider)
+        # Keep expert decoupled from general-model routing:
+        # - If caller specifies provider/model, respect it.
+        # - Otherwise prefer OpenAI-compatible backend (independent API quota).
+        if provider:
+            provider_name = self._resolve_provider_name(provider)
+        elif self.config.openai_api_key:
+            provider_name = "openai_compatible"
+        else:
+            provider_name = self._resolve_provider_name(None)
+        expert_requested_model = model or (self.config.openai_model_name if provider_name == "openai_compatible" else None)
         self._append_session_message(session_id=session_id, role="user", content=user_message)
         final_text = ""
         try:
@@ -2231,7 +2241,7 @@ Open `index.html` directly in your browser.
                 session_id=session_id,
                 mode="expert",
                 provider_name=provider_name,
-                requested_model=model,
+                requested_model=expert_requested_model,
                 provider_options=model_provider_options,
             ):
                 selected_model = model_name
