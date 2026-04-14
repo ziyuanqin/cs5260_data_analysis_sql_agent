@@ -304,7 +304,7 @@ function renderUploadedFiles() {
 }
 
 function getModeGreetingText() {
-  return state.chatMode === "expert" ? "Hello, I'm Expert Mode" : "Hello, I'm General Mode";
+  return state.chatMode === "expert" ? "Hello, I'm Expert Mode" : "Hello, I'm Analytix";
 }
 
 function syncModeUi() {
