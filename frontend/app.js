@@ -54,6 +54,7 @@ const GENERAL_MODELS = [
   { id: "zai-org/GLM-5.1:together", label: "GLM 5.1" },
   { id: "deepseek-ai/DeepSeek-R1:novita", label: "DeepSeek R1" },
   { id: "openai/gpt-oss-120b:groq", label: "GPT-OSS 120B" },
+  { id: "deepseek", label: "DeepSeek-V3.2" },
 ];
 
 function isValidGeneralModel(modelId) {
