@@ -557,9 +557,17 @@ async function previewEdaReport(threadId) {
   }
 
   const html = await resp.text();
+  const normalizedHtml = normalizeHtmlForPreview(html) || wrapHtmlFragment(html);
+  const activeConvo = getActiveConversation();
+  if (activeConvo) {
+    activeConvo.edaReportPreviewHtml = normalizedHtml;
+    activeConvo.edaReportPreviewSourceKey = `eda-report:${threadId}`;
+    activeConvo.updatedAt = Date.now();
+    persistState();
+  }
   htmlPreviewDismissed = false;
   dismissedHtmlPreviewSourceKey = "";
-  syncHtmlPreview({ html, sourceKey: `eda-report:${threadId}` });
+  syncHtmlPreview({ html: normalizedHtml, sourceKey: `eda-report:${threadId}` });
 }
 
 function downloadEdaReport(threadId) {
@@ -1959,6 +1967,24 @@ function findLatestHtmlFromConversation(convo) {
   return { html: null, sourceKey: "" };
 }
 
+function resolveConversationHtmlPreview(convo) {
+  if (!convo || typeof convo !== "object") {
+    return { html: null, sourceKey: "" };
+  }
+
+  if (typeof convo.edaReportPreviewHtml === "string" && convo.edaReportPreviewHtml.trim()) {
+    return {
+      html: convo.edaReportPreviewHtml,
+      sourceKey:
+        typeof convo.edaReportPreviewSourceKey === "string" && convo.edaReportPreviewSourceKey.trim()
+          ? convo.edaReportPreviewSourceKey
+          : `eda-report:${convo.id || "unknown"}`,
+    };
+  }
+
+  return findLatestHtmlFromConversation(convo);
+}
+
 function syncHtmlPreview(previewData) {
   if (!htmlPreviewPane || !htmlPreviewFrame) return;
 
@@ -2064,6 +2090,9 @@ function restoreState() {
           taskEvents,
           taskItems,
           artifacts,
+          edaReportPreviewHtml: typeof convo?.edaReportPreviewHtml === "string" ? convo.edaReportPreviewHtml : "",
+          edaReportPreviewSourceKey:
+            typeof convo?.edaReportPreviewSourceKey === "string" ? convo.edaReportPreviewSourceKey : "",
           usage,
           evidenceItems,
           lastRequest: normalizeLastRequest(convo?.lastRequest),
@@ -2115,6 +2144,8 @@ function createConversation() {
     taskEvents: [],
     taskItems: [],
     artifacts: [],
+    edaReportPreviewHtml: "",
+    edaReportPreviewSourceKey: "",
     evidenceItems: [],
     usage: null,
     lastRequest: null,
@@ -2360,7 +2391,7 @@ function renderMessages() {
   }
 
   messageList.scrollTop = messageList.scrollHeight;
-  syncHtmlPreview(findLatestHtmlFromConversation(convo));
+  syncHtmlPreview(resolveConversationHtmlPreview(convo));
   queueMathTypeset();
 }
 
