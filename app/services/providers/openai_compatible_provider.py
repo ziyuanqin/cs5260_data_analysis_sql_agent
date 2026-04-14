@@ -76,10 +76,14 @@ class OpenAICompatibleProvider:
 
         with requests.post(url, headers=headers, json=payload, stream=True, timeout=timeout) as resp:
             resp.raise_for_status()
-            for raw_line in resp.iter_lines(decode_unicode=True):
+            # Force UTF-8 decoding to avoid mojibake when upstream omits charset.
+            for raw_line in resp.iter_lines(decode_unicode=False):
                 if not raw_line:
                     continue
-                line = str(raw_line).strip()
+                if isinstance(raw_line, bytes):
+                    line = raw_line.decode("utf-8", errors="ignore").strip()
+                else:
+                    line = str(raw_line).strip()
                 if not line.startswith("data:"):
                     continue
                 data = line[len("data:") :].strip()
