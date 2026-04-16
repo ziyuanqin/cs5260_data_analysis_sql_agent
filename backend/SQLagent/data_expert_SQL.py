@@ -323,10 +323,23 @@ class SQLExpert:
            - Provide a 1-sentence "Bottom Line Up Front" (BLUF) that answers the core question.
         
         ### STRATEGIC RECOMMENDATIONS (3 Pillars)
-        Provide exactly three (3) highly targeted, non-generic business recommendations. Each must follow this structure:
-        - **Observation**: What does the data say?
-        - **Action**: What specific step should the business take?
-        - **Expected Impact**: What is the projected ROI or strategic benefit?
+        Provide exactly three (3) highly targeted, non-generic business recommendations. 
+        **CRITICAL: You must use explicit numbering 1, 2, and 3.**
+        
+        1. **Strategic Pillar A: [Insert High-Level Title]**
+           - **Observation**: What does the data say?
+           - **Action**: What specific step should the business take?
+           - **Expected Impact**: What is the projected ROI or strategic benefit?
+        
+        2. **Strategic Pillar B: [Insert High-Level Title]**
+           - **Observation**: ...
+           - **Action**: ...
+           - **Expected Impact**: ...
+        
+        3. **Strategic Pillar C: [Insert High-Level Title]**
+           - **Observation**: ...
+           - **Action**: ...
+           - **Expected Impact**: ...
         
         ### CONSTRAINTS
         - Avoid corporate jargon; be concise and direct.
