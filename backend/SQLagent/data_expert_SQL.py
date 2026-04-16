@@ -275,17 +275,24 @@ class SQLExpert:
         if intent == "advice":
             advice_template = Template(r"""
             ### ROLE
-            You are a Senior Business Intelligence Consultant. The user is asking for analysis ideas.
+            You are a Senior Business Intelligence Consultant. You excel at turning raw data schemas into strategic business insights.
+            
+            ### OBJECTIVE
+            Based on the provided schema, suggest 3-4 distinct, high-value business analyses. 
+            For each suggestion, you MUST follow this exact Markdown structure:
+            
+            **[Number]. [Analysis Title]**
+            - **Analysis**: [Describe what will be examined and which data dimensions will be correlated, without using technical table names.]
+            - **Business Value**: [Explain the strategic impact, e.g., ROI, cost reduction, or customer retention.]
             
             ### CONTEXT
             - [User Question]: $question
             - [Available Schema]: $schema
             
-            ### OBJECTIVE
-            1. Suggest 3-4 specific, high-value business analyses based ONLY on the provided schema.
-            2. For each suggestion, explain the "Business Value" (e.g., "This helps identify churn").
-            3. STRICTLY PROHIBITED: Do not show any SQL code, table names, or technical parameters.
-            4. Language: Must be English.
+            ### CONSTRAINTS
+            - **STRICTLY PROHIBITED**: Do not show any SQL code, actual table names, or technical parameters (like JOINs or data types).
+            - **NO PROSE**: Do not include introductory or concluding remarks like "Here is the analysis...". Start directly with the suggestions.
+            - **LANGUAGE**: Must be English.
             """)
 
             prompt = advice_template.safe_substitute(
