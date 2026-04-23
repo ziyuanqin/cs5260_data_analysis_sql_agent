@@ -1,12 +1,3 @@
-
-// Keep session data stable across refresh/close to avoid cross-session file cleanup side effects.
-window.addEventListener('DOMContentLoaded', () => {
-  // 初始化页面状态
-  loadPersistedState();
-
-  // 确保一进来就是干净的，且根据 state.chatMode 隐藏/显示面板
-  triggerGlobalCleanup();
-});
 // 前端主控脚本：负责会话状态管理、消息渲染、SSE 流式接收。
 const STORAGE_KEY = "agent_ui_chat_sessions_v2";
 
@@ -34,9 +25,8 @@ const taskStatusToggleBtn = document.getElementById("taskStatusToggleBtn");
 const taskRetryBtn = document.getElementById("taskRetryBtn");
 const taskStopBtn = document.getElementById("taskStopBtn");
 const taskClearBtn = document.getElementById("taskClearBtn");
-const evidencePane = document.getElementById("evidencePane");
-const evidenceList = document.getElementById("evidenceList");
-const evidenceToggleBtn = document.getElementById("evidenceToggleBtn");
+const taskViewStatusBtn = document.getElementById("taskViewStatusBtn");
+const taskViewEvidenceBtn = document.getElementById("taskViewEvidenceBtn");
 const taskChipBtn = document.getElementById("taskChipBtn");
 const webSearchToggleBtn = document.getElementById("webSearchToggleBtn");
 const fileAccessToggleBtn = document.getElementById("fileAccessToggleBtn");
@@ -104,7 +94,7 @@ const state = {
   edaAnalysisEnabled: false,
   sqlAnalysisEnabled: false,
   taskStatusCollapsed: false,
-  evidenceCollapsed: false,
+  taskStatusView: "task",
   isEditingLastUser: false,
 };
 
@@ -443,11 +433,13 @@ function normalizeTaskItems(rawItems) {
 
 function normalizeArtifactItems(rawItems) {
   if (!Array.isArray(rawItems)) return [];
-  return rawItems
+  const normalized = rawItems
     .map((item) => {
-      const relativePath = typeof item?.relative_path === "string" ? item.relative_path.trim() : "";
+      const relativePathRaw = typeof item?.relative_path === "string" ? item.relative_path.trim() : "";
+      const relativePath = normalizeArtifactRelativePath(relativePathRaw);
       const fallbackName = typeof item?.name === "string" ? item.name.trim() : "";
-      const path = relativePath || fallbackName;
+      const fallbackPath = normalizeArtifactRelativePath(fallbackName);
+      const path = relativePath || fallbackPath;
       if (!path) return null;
       return {
         name: fallbackName || path.split("/").pop() || path,
@@ -457,6 +449,25 @@ function normalizeArtifactItems(rawItems) {
       };
     })
     .filter(Boolean);
+  const deduped = new Map();
+  for (const item of normalized) {
+    const key = String(item.relativePath || "").toLowerCase();
+    if (!key) continue;
+    deduped.set(key, item);
+  }
+  return Array.from(deduped.values());
+}
+
+function normalizeArtifactRelativePath(rawPath) {
+  const normalized = String(rawPath || "").replaceAll("\\", "/").trim();
+  if (!normalized) return "";
+  const parts = normalized
+    .split("/")
+    .map((seg) => seg.trim())
+    .filter((seg) => seg.length > 0 && seg !== ".");
+  if (parts.length === 0) return "";
+  if (parts.some((seg) => seg === "..")) return "";
+  return parts.join("/");
 }
 
 function condenseAssistantTextForArtifacts(text, artifacts) {
@@ -576,12 +587,90 @@ function downloadEdaCsv(threadId) {
 
 function buildArtifactDownloadUrl(sessionId, artifactPath) {
   const safeSession = encodeURIComponent(String(sessionId || "").trim());
-  const safeArtifact = String(artifactPath || "")
-    .trim()
+  const normalizedPath = normalizeArtifactRelativePath(artifactPath);
+  const safeArtifact = normalizedPath
     .split("/")
     .map((seg) => encodeURIComponent(seg))
     .join("/");
   return `/api/chat/artifacts/${safeSession}/download/${safeArtifact}`;
+}
+
+function buildArtifactPreviewUrl(sessionId, artifactPath) {
+  const safeSession = encodeURIComponent(String(sessionId || "").trim());
+  const normalizedPath = normalizeArtifactRelativePath(artifactPath);
+  const safeArtifact = normalizedPath
+    .split("/")
+    .map((seg) => encodeURIComponent(seg))
+    .join("/");
+  return `/api/chat/artifacts/${safeSession}/preview/${safeArtifact}`;
+}
+
+function buildArtifactBaseUrl(sessionId, artifactPath) {
+  const safeSession = encodeURIComponent(String(sessionId || "").trim());
+  const normalizedPath = normalizeArtifactRelativePath(artifactPath);
+  const parts = normalizedPath
+    .split("/")
+    .map((seg) => seg.trim())
+    .filter((seg) => seg.length > 0);
+  if (parts.length > 0) {
+    parts.pop();
+  }
+  const safeDir = parts.map((seg) => encodeURIComponent(seg)).join("/");
+  return safeDir
+    ? `/api/chat/artifacts/${safeSession}/download/${safeDir}/`
+    : `/api/chat/artifacts/${safeSession}/download/`;
+}
+
+function escapeHtmlAttribute(text) {
+  return String(text || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function injectBaseHrefForPreview(htmlText, baseHref) {
+  if (typeof htmlText !== "string" || !htmlText.trim()) return htmlText;
+  if (typeof baseHref !== "string" || !baseHref.trim()) return htmlText;
+  const baseTag = `<base href="${escapeHtmlAttribute(baseHref)}" />`;
+  if (/<base\s+href=/i.test(htmlText)) {
+    return htmlText.replace(/<base\s+href=[^>]*>/i, baseTag);
+  }
+  if (/<head[\s>]/i.test(htmlText)) {
+    return htmlText.replace(/<head([^>]*)>/i, `<head$1>\n${baseTag}`);
+  }
+  if (/<html[\s>]/i.test(htmlText)) {
+    return htmlText.replace(/<html([^>]*)>/i, `<html$1>\n<head>\n${baseTag}\n</head>`);
+  }
+  return `<!doctype html>\n<html>\n<head>\n${baseTag}\n</head>\n<body>\n${htmlText}\n</body>\n</html>`;
+}
+
+function scheduleHtmlSourceFallback(rawHtml) {
+  if (!artifactPreviewModal || !artifactPreviewFrameModal || !artifactPreviewText) return;
+  const token = String(Date.now()) + String(Math.random());
+  artifactPreviewFrameModal.dataset.previewToken = token;
+  window.setTimeout(() => {
+    if (!artifactPreviewModal || artifactPreviewModal.hidden) return;
+    if (artifactPreviewFrameModal.dataset.previewToken !== token) return;
+    try {
+      const doc = artifactPreviewFrameModal.contentDocument;
+      const body = doc?.body;
+      if (!body) return;
+      const text = (body.innerText || "").trim();
+      const hasElement = Boolean(
+        body.querySelector("img,svg,canvas,video,iframe,section,main,article,div,p,h1,h2,h3,h4,h5,h6,table,ul,ol,pre,code,form,button,input,textarea")
+      );
+      const hasVisual = text.length > 0 || hasElement;
+      if (!hasVisual) {
+        artifactPreviewFrameModal.hidden = true;
+        artifactPreviewFrameModal.srcdoc = "";
+        artifactPreviewText.hidden = false;
+        artifactPreviewText.textContent = typeof rawHtml === "string" ? rawHtml : "";
+      }
+    } catch {
+      // Keep iframe rendering if inaccessible in current browser policy.
+    }
+  }, 700);
 }
 
 function closeArtifactPreviewModal() {
@@ -590,6 +679,7 @@ function closeArtifactPreviewModal() {
   document.body.classList.remove("modal-open");
   if (artifactPreviewFrameModal) {
     artifactPreviewFrameModal.srcdoc = "";
+    artifactPreviewFrameModal.src = "about:blank";
     artifactPreviewFrameModal.hidden = true;
   }
   if (artifactPreviewText) {
@@ -618,10 +708,12 @@ function showArtifactPreviewInModal({ sessionId, artifactPath, contentType, rawT
 
   if (likelyHtml) {
     const normalized = normalizeHtmlForPreview(content) || wrapHtmlFragment(content);
+    const withBaseHref = injectBaseHrefForPreview(normalized, buildArtifactBaseUrl(sessionId, artifactPath));
     artifactPreviewText.hidden = true;
     artifactPreviewText.textContent = "";
     artifactPreviewFrameModal.hidden = false;
-    artifactPreviewFrameModal.srcdoc = normalized;
+    artifactPreviewFrameModal.srcdoc = withBaseHref;
+    scheduleHtmlSourceFallback(content);
   } else {
     artifactPreviewFrameModal.hidden = true;
     artifactPreviewFrameModal.srcdoc = "";
@@ -635,37 +727,121 @@ function showArtifactPreviewInModal({ sessionId, artifactPath, contentType, rawT
   };
 }
 
-async function previewArtifact(sessionId, artifactPath) {
-  const url = buildArtifactDownloadUrl(sessionId, artifactPath);
-  const resp = await fetch(url);
-  if (!resp.ok) {
-    throw new Error(`Artifact preview failed: HTTP ${resp.status}`);
+function showArtifactPreviewByUrl({ sessionId, artifactPath, directUrl }) {
+  if (!artifactPreviewModal || !artifactPreviewTitle || !artifactPreviewFrameModal || !artifactPreviewText) {
+    return;
   }
-  const contentType = (resp.headers.get("content-type") || "").toLowerCase();
-  const rawText = await resp.text();
-  showArtifactPreviewInModal({ sessionId, artifactPath, contentType, rawText });
+  artifactPreviewTitle.textContent = artifactPath || "Artifact Preview";
+  artifactPreviewModal.hidden = false;
+  document.body.classList.add("modal-open");
+
+  artifactPreviewText.hidden = true;
+  artifactPreviewText.textContent = "";
+  artifactPreviewFrameModal.hidden = false;
+  artifactPreviewFrameModal.srcdoc = "";
+  artifactPreviewFrameModal.onerror = () => {
+    artifactPreviewFrameModal.hidden = true;
+    artifactPreviewText.hidden = false;
+    artifactPreviewText.textContent = `Preview unavailable in iframe. Open directly: ${String(directUrl || "")}`;
+  };
+  artifactPreviewFrameModal.src = String(directUrl || "about:blank");
+
+  activeArtifactPreview = {
+    sessionId: String(sessionId || ""),
+    artifactPath: String(artifactPath || ""),
+  };
+}
+
+async function resolveBestArtifactPath(sessionId, artifactPath) {
+  const normalized = normalizeArtifactRelativePath(artifactPath);
+  if (!normalized) return "";
+  const safeSession = encodeURIComponent(String(sessionId || "").trim());
+  if (!safeSession) return normalized;
+
+  try {
+    const resp = await fetch(`/api/chat/artifacts/${safeSession}`, { cache: "no-store" });
+    if (!resp.ok) return normalized;
+    const payload = await resp.json();
+    const items = normalizeArtifactItems(payload?.items);
+    if (!items.length) return normalized;
+
+    const exact = items.find((item) => String(item.relativePath || "").toLowerCase() === normalized.toLowerCase());
+    if (exact?.relativePath) return exact.relativePath;
+
+    const targetBase = normalized.split("/").pop()?.toLowerCase() || "";
+    if (!targetBase) return normalized;
+    const byName = items.filter((item) => String(item.name || "").toLowerCase() === targetBase);
+    if (byName.length === 1 && byName[0]?.relativePath) {
+      return byName[0].relativePath;
+    }
+  } catch {
+    return normalized;
+  }
+
+  return normalized;
+}
+
+async function previewArtifact(sessionId, artifactPath) {
+  const normalizedPath = normalizeArtifactRelativePath(artifactPath);
+  if (!normalizedPath) {
+    throw new Error("Invalid artifact path.");
+  }
+  let candidatePath = normalizedPath;
+  let url = buildArtifactDownloadUrl(sessionId, candidatePath);
+  try {
+    let resp = await fetch(url, { cache: "no-store" });
+    if (!resp.ok) {
+      const bestPath = await resolveBestArtifactPath(sessionId, candidatePath);
+      if (bestPath && bestPath !== candidatePath) {
+        candidatePath = bestPath;
+        url = buildArtifactDownloadUrl(sessionId, candidatePath);
+        resp = await fetch(url, { cache: "no-store" });
+      }
+    }
+    if (!resp.ok) {
+      throw new Error(`Artifact preview failed: HTTP ${resp.status}`);
+    }
+    const contentType = (resp.headers.get("content-type") || "").toLowerCase();
+    const rawText = await resp.text();
+    showArtifactPreviewInModal({ sessionId, artifactPath: candidatePath, contentType, rawText });
+  } catch (err) {
+    // Browser/network/read failed: fallback to direct iframe URL preview.
+    showArtifactPreviewByUrl({ sessionId, artifactPath: candidatePath, directUrl: url });
+    return;
+  }
 }
 
 function downloadArtifact(sessionId, artifactPath) {
   const url = buildArtifactDownloadUrl(sessionId, artifactPath);
-  window.open(url, "_blank", "noopener");
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = String(artifactPath || "").replaceAll("\\", "/").split("/").pop() || "artifact";
+  anchor.rel = "noopener";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
 }
 
 async function refreshConversationArtifacts(conversationId, assistantMessage = null) {
   const safeSession = encodeURIComponent(String(conversationId || "").trim());
   if (!safeSession) return;
-  const resp = await fetch(`/api/chat/artifacts/${safeSession}`);
-  if (!resp.ok) return;
-  const payload = await resp.json();
-  const items = normalizeArtifactItems(payload?.items);
-  const convo = state.conversations.find((item) => item.id === conversationId);
-  if (convo) {
-    convo.artifacts = items;
-  }
-  if (assistantMessage) {
-    const runtime = ensureMessageRuntime(assistantMessage);
-    runtime.artifacts = items;
-    assistantMessage.artifacts = items;
+  try {
+    const resp = await fetch(`/api/chat/artifacts/${safeSession}`, { cache: "no-store" });
+    if (!resp.ok) return;
+    const payload = await resp.json();
+    const items = normalizeArtifactItems(payload?.items);
+    const convo = state.conversations.find((item) => item.id === conversationId);
+    if (convo) {
+      convo.artifacts = items;
+    }
+    if (assistantMessage) {
+      const runtime = ensureMessageRuntime(assistantMessage);
+      runtime.artifacts = items;
+      assistantMessage.artifacts = items;
+    }
+  } catch (err) {
+    // Best-effort only: do not fail the whole response when artifact refresh request fails.
+    console.warn("refreshConversationArtifacts failed", err);
   }
 }
 
@@ -1164,6 +1340,43 @@ function renderAssistantArtifactCards(conversationId, artifacts) {
   if (!Array.isArray(artifacts) || artifacts.length === 0) return "";
   const escapedSession = escapeHtml(conversationId);
   const tiles = artifacts.map((item) => renderArtifactIconTile(conversationId, item, false, true)).join("");
+  const htmlArtifacts = artifacts
+    .filter((item) => {
+      const path = String(item?.relativePath || item?.name || "").toLowerCase();
+      return path.endsWith(".html") || path.endsWith(".htm");
+    })
+    .sort((a, b) => {
+      const pa = String(a?.relativePath || a?.name || "").replaceAll("\\", "/").toLowerCase();
+      const pb = String(b?.relativePath || b?.name || "").replaceAll("\\", "/").toLowerCase();
+      const score = (p) => {
+        if (p === "index.html" || p.endsWith("/index.html")) return 0;
+        return 1;
+      };
+      const sa = score(pa);
+      const sb = score(pb);
+      if (sa !== sb) return sa - sb;
+      if (pa.length !== pb.length) return pa.length - pb.length;
+      return pa.localeCompare(pb);
+    });
+  const primaryHtml = htmlArtifacts.length > 0 ? htmlArtifacts[0] : null;
+  const previewUrl = primaryHtml ? buildArtifactPreviewUrl(conversationId, primaryHtml.relativePath || primaryHtml.name || "") : "";
+  const embeddedPreview = primaryHtml && previewUrl
+    ? `
+      <div class="assistant-web-preview-wrap">
+        <div class="assistant-web-preview-head">
+          <span>Web Preview</span>
+          <span class="assistant-web-preview-file">${escapeHtml(String(primaryHtml.relativePath || primaryHtml.name || ""))}</span>
+        </div>
+        <iframe
+          class="assistant-web-preview-frame"
+          src="${escapeHtml(previewUrl)}"
+          loading="lazy"
+          sandbox="allow-scripts allow-forms"
+          title="Generated web preview"
+        ></iframe>
+      </div>
+    `
+    : "";
   return `
     <section class="assistant-artifacts">
       <div class="assistant-artifacts-head">
@@ -1171,6 +1384,7 @@ function renderAssistantArtifactCards(conversationId, artifacts) {
         <button class="runtime-artifact-btn ghost" type="button" data-artifact-bundle="1" data-session-id="${escapedSession}">Download ZIP</button>
       </div>
       <div class="assistant-artifact-grid">${tiles}</div>
+      ${embeddedPreview}
     </section>
   `;
 }
@@ -1513,19 +1727,48 @@ function setTaskStatusCollapsed(collapsed, shouldPersist = true) {
   syncSidePaneLayout();
 }
 
-function setEvidenceCollapsed(collapsed, shouldPersist = true) {
-  state.evidenceCollapsed = Boolean(collapsed);
-  if (evidencePane) {
-    evidencePane.classList.toggle("collapsed", state.evidenceCollapsed);
+function normalizeTaskStatusView(view) {
+  return view === "evidence" ? "evidence" : "task";
+}
+
+function syncTaskStatusViewTabs(activeView, hasTaskContent, hasEvidenceContent) {
+  const view = normalizeTaskStatusView(activeView);
+  state.taskStatusView = view;
+  const tabConfig = [
+    { btn: taskViewStatusBtn, key: "task" },
+    { btn: taskViewEvidenceBtn, key: "evidence" },
+  ];
+  for (const item of tabConfig) {
+    if (!item.btn) continue;
+    const selected = view === item.key;
+    item.btn.classList.toggle("active", selected);
+    item.btn.setAttribute("aria-selected", String(selected));
+    item.btn.disabled = false;
+    item.btn.setAttribute("aria-disabled", "false");
   }
-  if (evidenceToggleBtn) {
-    evidenceToggleBtn.textContent = state.evidenceCollapsed ? "Expand" : "Collapse";
-    evidenceToggleBtn.setAttribute("aria-expanded", String(!state.evidenceCollapsed));
-  }
-  if (shouldPersist) {
-    persistState();
-  }
-  syncSidePaneLayout();
+}
+
+function renderEvidenceListContent(items) {
+  return items
+    .map((item) => {
+      const stepLabel = item.stepIndex !== null ? `Step ${item.stepIndex + 1}` : "Step";
+      const title = `${stepLabel} · ${item.tool || "tool"}`;
+      const metaBits = [];
+      if (item.status) metaBits.push(`status: ${escapeHtml(item.status)}`);
+      if (item.model) metaBits.push(`model: ${escapeHtml(item.model)}`);
+      if (item.reason) metaBits.push(`reason: ${escapeHtml(item.reason)}`);
+      const metaText = metaBits.join(" | ");
+      return `
+        <div class="evidence-item">
+          <div class="evidence-title-line">${escapeHtml(title)}</div>
+          ${item.stepTask ? `<div class="evidence-meta">${escapeHtml(item.stepTask)}</div>` : ""}
+          ${item.source ? `<div class="evidence-source">${escapeHtml(item.source)}</div>` : ""}
+          ${metaText ? `<div class="evidence-meta">${metaText}</div>` : ""}
+          ${item.outputExcerpt ? `<div class="evidence-excerpt">${escapeHtml(item.outputExcerpt)}</div>` : ""}
+        </div>
+      `;
+    })
+    .join("");
 }
 
 function appendTaskStatusEvent(conversationId, payload) {
@@ -1578,6 +1821,7 @@ function renderTaskStatusPanel() {
     taskStatusPane.hidden = true;
     taskStatusList.innerHTML = "";
     if (taskStatusUsage) taskStatusUsage.textContent = "";
+    syncTaskStatusViewTabs("task", false, false);
     updateTaskStatusActionButtons(false);
     syncSidePaneLayout();
     return;
@@ -1586,26 +1830,46 @@ function renderTaskStatusPanel() {
   const events = Array.isArray(convo?.taskEvents) ? convo.taskEvents : [];
   const taskItems = normalizeTaskItems(convo?.taskItems);
   const artifacts = normalizeArtifactItems(convo?.artifacts);
+  const evidenceItems = Array.isArray(convo?.evidenceItems) ? convo.evidenceItems : [];
   const usage = convo?.usage || null;
-  const hasContent =
+  const hasTaskContent =
     taskItems.length > 0 ||
     artifacts.length > 0 ||
     events.length > 0 ||
     Boolean(formatUsageText(usage)) ||
     state.isStreaming;
+  const hasEvidenceContent = evidenceItems.length > 0;
+  const hasContent = hasTaskContent || hasEvidenceContent;
 
   taskStatusPane.hidden = !hasContent;
   if (!hasContent) {
     taskStatusList.innerHTML = "";
     if (taskStatusUsage) taskStatusUsage.textContent = "";
+    syncTaskStatusViewTabs("task", false, false);
     setTaskStatusCollapsed(false, false);
     updateTaskStatusActionButtons(false);
     syncSidePaneLayout();
     return;
   }
 
+  let activeView = normalizeTaskStatusView(state.taskStatusView);
+  if (activeView === "task" && !hasTaskContent && hasEvidenceContent) {
+    activeView = "evidence";
+  }
+  syncTaskStatusViewTabs(activeView, hasTaskContent, hasEvidenceContent);
+
   if (taskStatusUsage) {
-    taskStatusUsage.textContent = formatUsageText(usage);
+    taskStatusUsage.textContent = hasTaskContent ? formatUsageText(usage) : "";
+  }
+
+  if (activeView === "evidence") {
+    taskStatusList.innerHTML = hasEvidenceContent
+      ? renderEvidenceListContent(evidenceItems)
+      : `<div class="task-status-empty">No evidence yet.</div>`;
+    setTaskStatusCollapsed(state.taskStatusCollapsed, false);
+    updateTaskStatusActionButtons(hasContent);
+    syncSidePaneLayout();
+    return;
   }
 
   const latestEvent = events.length > 0 ? events[events.length - 1] : null;
@@ -1631,11 +1895,18 @@ function renderTaskStatusPanel() {
       ? doneSteps
       : null;
   const runningItem = runningIndex !== null ? taskItems[runningIndex] : null;
+  const latestMessageText = String(latestEvent?.rawMessage || latestEvent?.message || "");
+  const reviewerNeedsRetry = latestStage === "reviewer" && /\bFAIL\b/i.test(latestMessageText);
   const progressPct = totalSteps > 0 ? Math.round((doneSteps / totalSteps) * 100) : 0;
+  const workflowFinalized = !state.isStreaming && stageSeen.has("summarizer");
   const summaryLabel = runningItem
     ? `Running: ${runningItem.title}`
-    : doneSteps === totalSteps && totalSteps > 0
+    : reviewerNeedsRetry
+      ? "Reviewer requested retry"
+    : doneSteps === totalSteps && totalSteps > 0 && workflowFinalized
       ? "All tasks completed"
+      : doneSteps === totalSteps && totalSteps > 0
+        ? "Execution completed, finalizing output"
       : latestStage
         ? `${formatStageLabel(latestStage)} in progress`
         : "Ready";
@@ -1644,7 +1915,7 @@ function renderTaskStatusPanel() {
     <div class="task-stage-flow">
       ${stageOrder
         .map((stage) => {
-          const isActive = latestStage === stage;
+          const isActive = latestStage === stage && state.isStreaming;
           const isDone = stageSeen.has(stage) && !isActive;
           const cls = isActive ? "active" : isDone ? "done" : "pending";
           const marker = isActive ? "●" : isDone ? "✓" : "○";
@@ -1661,7 +1932,7 @@ function renderTaskStatusPanel() {
 
   const processEvents = events
     .filter((item) => ["router", "planner", "executor", "reviewer", "summarizer"].includes(String(item.stage || "").toLowerCase()))
-    .slice(-4);
+    .slice(-2);
   const processList = processEvents.length
     ? `
       <div class="task-process-list">
@@ -1679,6 +1950,16 @@ function renderTaskStatusPanel() {
       </div>
     `
     : "";
+  const executionBlock = processList
+    ? `
+      <div class="task-execution-wrap">
+        <div class="task-artifact-head">
+          <span>Execution Details</span>
+        </div>
+        ${processList}
+      </div>
+    `
+    : "";
 
   const summaryBlock = totalSteps > 0
     ? `
@@ -1691,7 +1972,6 @@ function renderTaskStatusPanel() {
         <div class="task-progress-track">
           <div class="task-progress-fill" style="width: ${progressPct}%"></div>
         </div>
-        ${processList}
       </div>
     `
     : state.isStreaming
@@ -1726,6 +2006,16 @@ function renderTaskStatusPanel() {
       `;
     })
     .join("");
+  const planBlock = rows
+    ? `
+      <div class="task-plan-wrap">
+        <div class="task-artifact-head">
+          <span>Plan Tasks</span>
+        </div>
+        ${rows}
+      </div>
+    `
+    : "";
 
   const artifactBlock = artifacts.length
     ? `
@@ -1741,10 +2031,10 @@ function renderTaskStatusPanel() {
     `
     : "";
 
-  taskStatusList.innerHTML = `${summaryBlock}${rows}${artifactBlock}`;
+  taskStatusList.innerHTML = `${planBlock}${summaryBlock}${executionBlock}${artifactBlock}`;
 
   setTaskStatusCollapsed(state.taskStatusCollapsed, false);
-  updateTaskStatusActionButtons(true);
+  updateTaskStatusActionButtons(hasContent);
   syncSidePaneLayout();
 }
 
@@ -1753,7 +2043,7 @@ function hasRetryableRequest(convo) {
   return Boolean(req && typeof req.text === "string" && req.text.trim());
 }
 
-function updateTaskStatusActionButtons(hasTaskContent) {
+function updateTaskStatusActionButtons(hasPaneContent) {
   const convo = getActiveConversation();
   const canRetry = !state.isStreaming && hasRetryableRequest(convo);
   const canStop = state.isStreaming && Boolean(activeStreamAbortController);
@@ -1767,12 +2057,12 @@ function updateTaskStatusActionButtons(hasTaskContent) {
     taskStopBtn.setAttribute("aria-disabled", String(!canStop));
   }
   if (taskClearBtn) {
-    taskClearBtn.disabled = !hasTaskContent;
-    taskClearBtn.setAttribute("aria-disabled", String(!hasTaskContent));
+    taskClearBtn.disabled = !hasPaneContent;
+    taskClearBtn.setAttribute("aria-disabled", String(!hasPaneContent));
   }
   if (taskStatusToggleBtn) {
-    taskStatusToggleBtn.disabled = !hasTaskContent;
-    taskStatusToggleBtn.setAttribute("aria-disabled", String(!hasTaskContent));
+    taskStatusToggleBtn.disabled = !hasPaneContent;
+    taskStatusToggleBtn.setAttribute("aria-disabled", String(!hasPaneContent));
   }
 }
 
@@ -1800,64 +2090,7 @@ function appendEvidenceItem(conversationId, item) {
   }
   convo.updatedAt = Date.now();
   persistState();
-  renderEvidencePanel();
-}
-
-function renderEvidencePanel() {
-  if (!evidencePane || !evidenceList) return;
-  if (!canShowSidePane()) {
-    evidencePane.hidden = true;
-    evidenceList.innerHTML = "";
-    setEvidenceCollapsed(false, false);
-    if (evidenceToggleBtn) {
-      evidenceToggleBtn.disabled = true;
-      evidenceToggleBtn.setAttribute("aria-disabled", "true");
-    }
-    syncSidePaneLayout();
-    return;
-  }
-  const convo = getActiveConversation();
-  const items = Array.isArray(convo?.evidenceItems) ? convo.evidenceItems : [];
-  const hasContent = items.length > 0;
-  evidencePane.hidden = !hasContent;
-  if (!hasContent) {
-    evidenceList.innerHTML = "";
-    setEvidenceCollapsed(false, false);
-    if (evidenceToggleBtn) {
-      evidenceToggleBtn.disabled = true;
-      evidenceToggleBtn.setAttribute("aria-disabled", "true");
-    }
-    syncSidePaneLayout();
-    return;
-  }
-
-  evidenceList.innerHTML = items
-    .map((item) => {
-      const stepLabel = item.stepIndex !== null ? `Step ${item.stepIndex + 1}` : "Step";
-      const title = `${stepLabel} · ${item.tool || "tool"}`;
-      const metaBits = [];
-      if (item.status) metaBits.push(`status: ${escapeHtml(item.status)}`);
-      if (item.model) metaBits.push(`model: ${escapeHtml(item.model)}`);
-      if (item.reason) metaBits.push(`reason: ${escapeHtml(item.reason)}`);
-      const metaText = metaBits.join(" | ");
-      return `
-        <div class="evidence-item">
-          <div class="evidence-title-line">${escapeHtml(title)}</div>
-          ${item.stepTask ? `<div class="evidence-meta">${escapeHtml(item.stepTask)}</div>` : ""}
-          ${item.source ? `<div class="evidence-source">${escapeHtml(item.source)}</div>` : ""}
-          ${metaText ? `<div class="evidence-meta">${metaText}</div>` : ""}
-          ${item.outputExcerpt ? `<div class="evidence-excerpt">${escapeHtml(item.outputExcerpt)}</div>` : ""}
-        </div>
-      `;
-    })
-    .join("");
-
-  if (evidenceToggleBtn) {
-    evidenceToggleBtn.disabled = false;
-    evidenceToggleBtn.setAttribute("aria-disabled", "false");
-  }
-  setEvidenceCollapsed(state.evidenceCollapsed, false);
-  syncSidePaneLayout();
+  renderTaskStatusPanel();
 }
 
 function syncSidePaneLayout() {
@@ -1867,8 +2100,7 @@ function syncSidePaneLayout() {
   }
   const hasTaskPane = taskStatusPane && !taskStatusPane.hidden;
   const hasHtmlPane = htmlPreviewPane && !htmlPreviewPane.hidden;
-  const hasEvidencePane = evidencePane && !evidencePane.hidden;
-  const showSidePane = Boolean(hasTaskPane || hasEvidencePane || hasHtmlPane);
+  const showSidePane = Boolean(hasTaskPane || hasHtmlPane);
   mainPanel.classList.toggle("with-side-pane", showSidePane);
 }
 
@@ -2030,7 +2262,7 @@ function persistState() {
       sqlAnalysisEnabled: state.sqlAnalysisEnabled,
       isDbConnected: state.isDbConnected,
       taskStatusCollapsed: state.taskStatusCollapsed,
-      evidenceCollapsed: state.evidenceCollapsed,
+      taskStatusView: state.taskStatusView,
     })
   );
 }
@@ -2086,7 +2318,7 @@ function restoreState() {
     state.sqlAnalysisEnabled = Boolean(parsed.sqlAnalysisEnabled);
     state.isDbConnected = Boolean(parsed.isDbConnected);
     state.taskStatusCollapsed = Boolean(parsed.taskStatusCollapsed);
-    state.evidenceCollapsed = Boolean(parsed.evidenceCollapsed);
+    state.taskStatusView = normalizeTaskStatusView(parsed.taskStatusView);
     if (state.chatMode !== "expert") {
       state.edaAnalysisEnabled = false;
       state.sqlAnalysisEnabled = false;
@@ -2233,7 +2465,6 @@ function renderMessages() {
   if (isConversationEmpty(convo) && emptyState) {
     messageList.appendChild(emptyState);
     syncHtmlPreview({ html: null, sourceKey: "" });
-    renderEvidencePanel();
     return;
   }
 
@@ -2369,7 +2600,6 @@ function renderAll() {
   renderHistory();
   renderMessages();
   renderTaskStatusPanel();
-  renderEvidencePanel();
   syncMainLayout();
   syncModeUi();
 }
@@ -2515,7 +2745,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
   window.addEventListener("resize", () => {
     renderTaskStatusPanel();
-    renderEvidencePanel();
     syncSidePaneLayout();
   });
 });
@@ -2579,165 +2808,218 @@ async function streamAssistantReply(conversationId, assistantMessage, userText, 
 
   const reader = resp.body.getReader();
   const decoder = new TextDecoder("utf-8");
-  // 由于网络分片可能把一帧切断，buffer 用于拼接残缺数据。
   let buffer = "";
+  let sawFinalEvent = false;
+  let sawSummarizerDone = false;
+  let sawAnyAssistantText = false;
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
+  const processFrame = (frame) => {
+    const line = frame
+      .split("\n")
+      .find((item) => item.startsWith("data: "));
+    if (!line) return false;
 
-    buffer += decoder.decode(value, { stream: true });
-    // SSE 帧间隔是空行，因此按 \n\n 切帧。
-    const frames = buffer.split("\n\n");
-    buffer = frames.pop() || "";
+    let payload;
+    try {
+      payload = JSON.parse(line.slice(6));
+    } catch {
+      return false;
+    }
 
-    for (const frame of frames) {
-      const line = frame
-        .split("\n")
-        .find((item) => item.startsWith("data: "));
-      if (!line) continue;
+    if (payload?.event === "token") {
+      const tokenMeta = payload?.payload?.meta;
+      if (tokenMeta?.kind === "status") {
+        appendTaskStatusEvent(conversationId, payload?.payload || {});
+        if (tokenMeta?.usage) {
+          setConversationUsage(conversationId, tokenMeta.usage);
+        }
+        const runtime = ensureMessageRuntime(assistantMessage);
+        runtime.stage = typeof tokenMeta.stage === "string" ? tokenMeta.stage : runtime.stage;
+        runtime.capability = typeof tokenMeta.capability === "string" ? tokenMeta.capability : runtime.capability;
+        if (runtime.stage === "summarizer") {
+          sawSummarizerDone = true;
+        }
+        const taskItems = normalizeTaskItems(tokenMeta.task_items);
+        if (taskItems.length > 0) {
+          runtime.taskItems = taskItems;
+          const convo = state.conversations.find((item) => item.id === conversationId);
+          if (convo) {
+            convo.taskItems = taskItems;
+          }
+        }
+        if (assistantMessage.pending) {
+          assistantMessage.pendingLabel = buildPendingLabelFromMeta(tokenMeta);
+          const active = getActiveConversation();
+          if (active && active.id === conversationId) {
+            renderMessages();
+          }
+        }
+        return false;
+      }
+      if (tokenMeta?.kind === "progress") {
+        if (tokenMeta?.usage) {
+          setConversationUsage(conversationId, tokenMeta.usage);
+        }
+        const runtime = ensureMessageRuntime(assistantMessage);
+        runtime.stage = typeof tokenMeta.stage === "string" ? tokenMeta.stage : runtime.stage;
+        runtime.capability = typeof tokenMeta.capability === "string" ? tokenMeta.capability : runtime.capability;
+        const taskItems = normalizeTaskItems(tokenMeta.task_items);
+        if (taskItems.length > 0) {
+          runtime.taskItems = taskItems;
+          const convo = state.conversations.find((item) => item.id === conversationId);
+          if (convo) {
+            convo.taskItems = taskItems;
+          }
+        }
+        const delta = typeof payload?.payload?.delta === "string" ? payload.payload.delta.trim() : "";
+        if (delta) {
+          runtime.progressLogs.push(delta);
+          if (runtime.progressLogs.length > 50) {
+            runtime.progressLogs = runtime.progressLogs.slice(-50);
+          }
+        }
+        if (assistantMessage.pending) {
+          assistantMessage.pendingLabel = buildPendingLabelFromMeta(tokenMeta);
+          const active = getActiveConversation();
+          if (active && active.id === conversationId) {
+            renderMessages();
+          }
+        }
+        return false;
+      }
+      if (tokenMeta?.kind === "evidence") {
+        if (payload?.payload?.meta?.item) {
+          appendEvidenceItem(conversationId, payload.payload.meta.item);
+        }
+        return false;
+      }
+      if (tokenMeta?.kind === "artifact") {
+        const artifactItem = payload?.payload?.meta?.item;
+        const convo = state.conversations.find((item) => item.id === conversationId);
+        if (convo) {
+          const conversationArtifacts = ensureConversationArtifacts(convo);
+          upsertArtifactItem(conversationArtifacts, artifactItem);
+        }
+        const runtime = ensureMessageRuntime(assistantMessage);
+        const runtimeArtifacts = Array.isArray(runtime.artifacts) ? runtime.artifacts : [];
+        runtime.artifacts = upsertArtifactItem(runtimeArtifacts, artifactItem);
+        assistantMessage.artifacts = upsertArtifactItem(normalizeArtifactItems(assistantMessage.artifacts), artifactItem);
+        const active = getActiveConversation();
+        if (active && active.id === conversationId) {
+          renderMessages();
+        }
+        return false;
+      }
 
-      let payload;
+      // token 事件为增量文本，持续追加到当前助手消息。
+      const delta = payload?.payload?.delta;
+      if (typeof delta === "string" && delta.length > 0) {
+        sawAnyAssistantText = true;
+        assistantMessage.pending = false;
+        assistantMessage.text += delta;
+        const active = getActiveConversation();
+        if (active && active.id === conversationId) {
+          renderMessages();
+        }
+      }
+      return false;
+    }
+
+    if (payload?.event === "final") {
+      sawFinalEvent = true;
+      // final 事件是兜底完整文本，防止 token 丢失导致内容不完整。
+      const finalText = payload?.payload?.text;
+      if (typeof finalText === "string" && finalText.trim()) {
+        sawAnyAssistantText = true;
+        assistantMessage.pending = false;
+        if (!assistantMessage.text.trim()) {
+          assistantMessage.text = finalText;
+        }
+        const active = getActiveConversation();
+        if (active && active.id === conversationId) {
+          renderMessages();
+        }
+      }
+      if (payload?.payload?.usage) {
+        setConversationUsage(conversationId, payload.payload.usage);
+      }
+      if (Array.isArray(payload?.payload?.artifacts)) {
+        const normalizedArtifacts = normalizeArtifactItems(payload.payload.artifacts);
+        const convo = state.conversations.find((item) => item.id === conversationId);
+        if (convo) {
+          convo.artifacts = normalizedArtifacts;
+        }
+        const runtime = ensureMessageRuntime(assistantMessage);
+        runtime.artifacts = normalizedArtifacts;
+        assistantMessage.artifacts = normalizedArtifacts;
+      }
+      if (typeof payload?.payload?.capability === "string") {
+        const runtime = ensureMessageRuntime(assistantMessage);
+        runtime.capability = payload.payload.capability;
+      }
+      return true;
+    }
+
+    if (payload?.event === "error") {
+      // 统一将服务端错误抛出给 submitMessage 处理。
+      throw new Error(payload?.payload?.message || "Streaming response error");
+    }
+    return false;
+  };
+
+  try {
+    while (true) {
+      let chunk;
       try {
-        payload = JSON.parse(line.slice(6));
-      } catch {
-        continue;
+        chunk = await reader.read();
+      } catch (err) {
+        // Keep already-generated content when network breaks after useful output.
+        if (sawFinalEvent || sawSummarizerDone || sawAnyAssistantText) {
+          return;
+        }
+        throw err;
       }
 
-      if (payload?.event === "token") {
-        const tokenMeta = payload?.payload?.meta;
-        if (tokenMeta?.kind === "status") {
-          appendTaskStatusEvent(conversationId, payload?.payload || {});
-          if (tokenMeta?.usage) {
-            setConversationUsage(conversationId, tokenMeta.usage);
-          }
-          const runtime = ensureMessageRuntime(assistantMessage);
-          runtime.stage = typeof tokenMeta.stage === "string" ? tokenMeta.stage : runtime.stage;
-          runtime.capability = typeof tokenMeta.capability === "string" ? tokenMeta.capability : runtime.capability;
-          const taskItems = normalizeTaskItems(tokenMeta.task_items);
-          if (taskItems.length > 0) {
-            runtime.taskItems = taskItems;
-            const convo = state.conversations.find((item) => item.id === conversationId);
-            if (convo) {
-              convo.taskItems = taskItems;
-            }
-          }
-          if (assistantMessage.pending) {
-            assistantMessage.pendingLabel = buildPendingLabelFromMeta(tokenMeta);
-            const active = getActiveConversation();
-            if (active && active.id === conversationId) {
-              renderMessages();
-            }
-          }
-          continue;
-        }
-        if (tokenMeta?.kind === "progress") {
-          if (tokenMeta?.usage) {
-            setConversationUsage(conversationId, tokenMeta.usage);
-          }
-          const runtime = ensureMessageRuntime(assistantMessage);
-          runtime.stage = typeof tokenMeta.stage === "string" ? tokenMeta.stage : runtime.stage;
-          runtime.capability = typeof tokenMeta.capability === "string" ? tokenMeta.capability : runtime.capability;
-          const taskItems = normalizeTaskItems(tokenMeta.task_items);
-          if (taskItems.length > 0) {
-            runtime.taskItems = taskItems;
-            const convo = state.conversations.find((item) => item.id === conversationId);
-            if (convo) {
-              convo.taskItems = taskItems;
-            }
-          }
-          const delta = typeof payload?.payload?.delta === "string" ? payload.payload.delta.trim() : "";
-          if (delta) {
-            runtime.progressLogs.push(delta);
-            if (runtime.progressLogs.length > 50) {
-              runtime.progressLogs = runtime.progressLogs.slice(-50);
-            }
-          }
-          if (assistantMessage.pending) {
-            assistantMessage.pendingLabel = buildPendingLabelFromMeta(tokenMeta);
-            const active = getActiveConversation();
-            if (active && active.id === conversationId) {
-              renderMessages();
-            }
-          }
-          continue;
-        }
-        if (tokenMeta?.kind === "evidence") {
-          if (payload?.payload?.meta?.item) {
-            appendEvidenceItem(conversationId, payload.payload.meta.item);
-          }
-          continue;
-        }
-        if (tokenMeta?.kind === "artifact") {
-          const artifactItem = payload?.payload?.meta?.item;
-          const convo = state.conversations.find((item) => item.id === conversationId);
-          if (convo) {
-            const conversationArtifacts = ensureConversationArtifacts(convo);
-            upsertArtifactItem(conversationArtifacts, artifactItem);
-          }
-          const runtime = ensureMessageRuntime(assistantMessage);
-          const runtimeArtifacts = Array.isArray(runtime.artifacts) ? runtime.artifacts : [];
-          runtime.artifacts = upsertArtifactItem(runtimeArtifacts, artifactItem);
-          assistantMessage.artifacts = upsertArtifactItem(normalizeArtifactItems(assistantMessage.artifacts), artifactItem);
-          const active = getActiveConversation();
-          if (active && active.id === conversationId) {
-            renderMessages();
-          }
-          continue;
-        }
-
-        // token 事件为增量文本，持续追加到当前助手消息。
-        const delta = payload?.payload?.delta;
-        if (typeof delta === "string" && delta.length > 0) {
-          assistantMessage.pending = false;
-          assistantMessage.text += delta;
-          const active = getActiveConversation();
-          if (active && active.id === conversationId) {
-            renderMessages();
+      const { value, done } = chunk;
+      if (done) {
+        if (buffer.trim()) {
+          const shouldStop = processFrame(buffer.trim());
+          if (shouldStop) {
+            return;
           }
         }
-        continue;
+        break;
       }
 
-      if (payload?.event === "final") {
-        // final 事件是兜底完整文本，防止 token 丢失导致内容不完整。
-        const finalText = payload?.payload?.text;
-        if (typeof finalText === "string" && finalText.trim()) {
-          assistantMessage.pending = false;
-          if (!assistantMessage.text.trim()) {
-            assistantMessage.text = finalText;
-          }
-          const active = getActiveConversation();
-          if (active && active.id === conversationId) {
-            renderMessages();
-          }
-        }
-        if (payload?.payload?.usage) {
-          setConversationUsage(conversationId, payload.payload.usage);
-        }
-        if (Array.isArray(payload?.payload?.artifacts)) {
-          const normalizedArtifacts = normalizeArtifactItems(payload.payload.artifacts);
-          const convo = state.conversations.find((item) => item.id === conversationId);
-          if (convo) {
-            convo.artifacts = normalizedArtifacts;
-          }
-          const runtime = ensureMessageRuntime(assistantMessage);
-          runtime.artifacts = normalizedArtifacts;
-          assistantMessage.artifacts = normalizedArtifacts;
-        }
-        if (typeof payload?.payload?.capability === "string") {
-          const runtime = ensureMessageRuntime(assistantMessage);
-          runtime.capability = payload.payload.capability;
-        }
-        continue;
-      }
+      buffer += decoder.decode(value, { stream: true });
+      // SSE 帧间隔是空行，因此按 \n\n 切帧。
+      const frames = buffer.split("\n\n");
+      buffer = frames.pop() || "";
 
-      if (payload?.event === "error") {
-        // 统一将服务端错误抛出给 submitMessage 处理。
-        throw new Error(payload?.payload?.message || "Streaming response error");
+      for (const frame of frames) {
+        const shouldStop = processFrame(frame);
+        if (shouldStop) {
+          try {
+            await reader.cancel();
+          } catch {
+            // Ignore cancel failure; we already have final payload.
+          }
+          return;
+        }
       }
     }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // no-op
+    }
   }
+
+  if (sawFinalEvent || sawSummarizerDone || sawAnyAssistantText) {
+    return;
+  }
+  throw new Error("Streaming ended before receiving valid assistant output.");
 }
 
 // 发送消息：写入当前会话并通过后端流式获取回复
@@ -2759,6 +3041,14 @@ async function submitMessage(text, options = {}, uiOptions = {}) {
     convo.messages = [];
   }
 
+  if (requestMode === "general") {
+    // Isolate per-request status panels and prevent stale run state from polluting new runs.
+    convo.taskEvents = [];
+    convo.taskItems = [];
+    convo.evidenceItems = [];
+    convo.usage = null;
+  }
+
   if (!hideUserMessage) {
     convo.messages.push({ role: "user", text });
   }
@@ -2776,7 +3066,7 @@ async function submitMessage(text, options = {}, uiOptions = {}) {
   convo.updatedAt = Date.now();
 
   // 如果还是默认标题，用第一条用户消息更新标题
-if (!hideUserMessage && /^New Chat\s\d+$/.test(convo.title)) {
+  if (!hideUserMessage && /^New Chat\s\d+$/.test(convo.title)) {
     convo.title = shortTitle(text);
   }
 
@@ -2827,6 +3117,9 @@ if (!hideUserMessage && /^New Chat\s\d+$/.test(convo.title)) {
     assistantMessage.pending = false;
     if (err?.name === "AbortError") {
       assistantMessage.text = "Generation stopped by user.";
+    } else if (assistantMessage.text.trim()) {
+      // Preserve streamed content if tail network fails after useful output.
+      console.warn("Stream finished with tail error; keeping partial/final content.", err);
     } else {
       assistantMessage.text = `Request failed: ${err?.message || "Unknown error"}`;
     }
@@ -3205,6 +3498,7 @@ taskClearBtn?.addEventListener("click", () => {
   if (!convo) return;
   convo.taskEvents = [];
   convo.taskItems = [];
+  convo.evidenceItems = [];
   convo.usage = null;
   convo.updatedAt = Date.now();
   persistState();
@@ -3216,9 +3510,18 @@ taskStatusToggleBtn?.addEventListener("click", () => {
   renderTaskStatusPanel();
 });
 
-evidenceToggleBtn?.addEventListener("click", () => {
-  setEvidenceCollapsed(!state.evidenceCollapsed);
-  renderEvidencePanel();
+taskViewStatusBtn?.addEventListener("click", () => {
+  if (state.taskStatusView === "task") return;
+  state.taskStatusView = "task";
+  persistState();
+  renderTaskStatusPanel();
+});
+
+taskViewEvidenceBtn?.addEventListener("click", () => {
+  if (state.taskStatusView === "evidence") return;
+  state.taskStatusView = "evidence";
+  persistState();
+  renderTaskStatusPanel();
 });
 
 document.addEventListener("keydown", (e) => {

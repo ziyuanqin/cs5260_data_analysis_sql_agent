@@ -6,6 +6,7 @@
 """
 import os
 import shutil
+import mimetypes
 from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -108,14 +109,134 @@ async def download_chat_artifact(
 ):
     """下载单个产物文件。"""
 
+    def _try_resolve_with_fuzzy_name(raw_name: str):
+        normalized = str(raw_name or "").replace("\\", "/").strip().lstrip("/")
+        if not normalized:
+            return None
+        wanted_lower = normalized.lower()
+        items = chat_service.list_artifacts(session_id)
+        if not items:
+            return None
+
+        exact = next(
+            (
+                str(item.get("relative_path") or item.get("name") or "").strip()
+                for item in items
+                if str(item.get("relative_path") or item.get("name") or "").strip().lower() == wanted_lower
+            ),
+            None,
+        )
+        if exact:
+            return chat_service.resolve_artifact_file(session_id, exact)
+
+        wanted_base = normalized.split("/")[-1].lower()
+        if not wanted_base:
+            return None
+        by_base = [
+            str(item.get("relative_path") or item.get("name") or "").strip()
+            for item in items
+            if str(item.get("name") or "").strip().lower() == wanted_base
+        ]
+        if len(by_base) == 1:
+            return chat_service.resolve_artifact_file(session_id, by_base[0])
+        return None
+
     try:
         target = chat_service.resolve_artifact_file(session_id, artifact_name)
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        lowered = str(artifact_name or "").lower()
+        if lowered.endswith(".js") or lowered.endswith(".css"):
+            chat_service.repair_web_preview_assets(session_id)
+            try:
+                target = chat_service.resolve_artifact_file(session_id, artifact_name)
+            except FileNotFoundError:
+                fuzzy_target = _try_resolve_with_fuzzy_name(artifact_name)
+                if fuzzy_target is None:
+                    raise HTTPException(status_code=404, detail=str(exc)) from exc
+                target = fuzzy_target
+        else:
+            fuzzy_target = _try_resolve_with_fuzzy_name(artifact_name)
+            if fuzzy_target is None:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            target = fuzzy_target
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return FileResponse(path=str(target), filename=target.name, media_type="application/octet-stream")
+    return FileResponse(
+        path=str(target),
+        filename=target.name,
+        media_type="application/octet-stream",
+        content_disposition_type="inline",
+    )
+
+@router.get("/artifacts/{session_id}/preview/{artifact_name:path}")
+async def preview_chat_artifact(
+    session_id: str,
+    artifact_name: str,
+    chat_service: ChatService = Depends(get_chat_service),
+):
+    """以浏览器可渲染的 MIME 类型预览单个产物文件。"""
+
+    def _try_resolve_with_fuzzy_name(raw_name: str):
+        normalized = str(raw_name or "").replace("\\", "/").strip().lstrip("/")
+        if not normalized:
+            return None
+        wanted_lower = normalized.lower()
+        items = chat_service.list_artifacts(session_id)
+        if not items:
+            return None
+
+        exact = next(
+            (
+                str(item.get("relative_path") or item.get("name") or "").strip()
+                for item in items
+                if str(item.get("relative_path") or item.get("name") or "").strip().lower() == wanted_lower
+            ),
+            None,
+        )
+        if exact:
+            return chat_service.resolve_artifact_file(session_id, exact)
+
+        wanted_base = normalized.split("/")[-1].lower()
+        if not wanted_base:
+            return None
+        by_base = [
+            str(item.get("relative_path") or item.get("name") or "").strip()
+            for item in items
+            if str(item.get("name") or "").strip().lower() == wanted_base
+        ]
+        if len(by_base) == 1:
+            return chat_service.resolve_artifact_file(session_id, by_base[0])
+        return None
+
+    try:
+        target = chat_service.resolve_artifact_file(session_id, artifact_name)
+    except FileNotFoundError as exc:
+        lowered = str(artifact_name or "").lower()
+        if lowered.endswith(".js") or lowered.endswith(".css"):
+            chat_service.repair_web_preview_assets(session_id)
+            try:
+                target = chat_service.resolve_artifact_file(session_id, artifact_name)
+            except FileNotFoundError:
+                fuzzy_target = _try_resolve_with_fuzzy_name(artifact_name)
+                if fuzzy_target is None:
+                    raise HTTPException(status_code=404, detail=str(exc)) from exc
+                target = fuzzy_target
+        else:
+            fuzzy_target = _try_resolve_with_fuzzy_name(artifact_name)
+            if fuzzy_target is None:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            target = fuzzy_target
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    media_type = mimetypes.guess_type(str(target))[0] or "text/plain"
+    return FileResponse(
+        path=str(target),
+        filename=target.name,
+        media_type=media_type,
+        content_disposition_type="inline",
+    )
 
 
 @router.get("/artifacts/{session_id}/bundle")

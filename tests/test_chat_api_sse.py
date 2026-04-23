@@ -135,6 +135,12 @@ class ChatApiSseTests(unittest.TestCase):
         self.assertIn("application/octet-stream", response.headers.get("content-type", ""))
         self.assertIn("demo", response.text)
 
+    def test_artifact_preview_endpoint(self):
+        response = self.client.get("/api/chat/artifacts/demo-session/preview/demo.html")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/html", response.headers.get("content-type", ""))
+        self.assertIn("demo", response.text)
+
     def test_artifact_bundle_endpoint(self):
         response = self.client.get("/api/chat/artifacts/demo-session/bundle")
         self.assertEqual(response.status_code, 200)

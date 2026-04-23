@@ -448,13 +448,15 @@ textarea {
 }
 
 .task-status-pane {
-  flex: 1 1 300px;
+  flex: 1 1 auto;
   min-height: 320px;
 }
 
 .evidence-pane {
-  flex: 1 1 260px;
+  flex: 0 1 42%;
   min-height: 220px;
+  max-height: 46%;
+  transition: flex-basis 0.18s ease, min-height 0.18s ease, max-height 0.18s ease;
 }
 
 .html-preview {
@@ -491,6 +493,34 @@ textarea {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+
+.task-status-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.task-view-tab {
+  border: 1px solid #d5deea;
+  background: #f8fafc;
+  color: #334155;
+  border-radius: 8px;
+  padding: 3px 9px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.task-view-tab.active {
+  border-color: #c6d2f5;
+  background: #e9eefc;
+  color: #273869;
+  font-weight: 600;
+}
+
+.task-view-tab:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .pane-toggle-btn {
@@ -533,6 +563,22 @@ textarea {
 
 .task-status-pane.collapsed .task-status-list {
   display: none;
+}
+
+.task-status-empty {
+  border: 1px dashed #dbe5f1;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: #64748b;
+  background: #f8fafc;
+}
+
+.task-plan-wrap,
+.task-execution-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .task-status-summary {
@@ -664,7 +710,7 @@ textarea {
   background: #ffffff;
   padding: 9px 10px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   position: relative;
   overflow: hidden;
@@ -718,9 +764,14 @@ textarea {
 }
 
 .task-check-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: block;
   color: #1f2937;
   font-size: 13px;
   line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .task-check-item.shimmer::after {
@@ -869,6 +920,16 @@ textarea {
 
 .evidence-pane.collapsed .evidence-list {
   display: none;
+}
+
+.evidence-pane.collapsed {
+  flex: 0 0 44px;
+  min-height: 44px;
+  max-height: 44px;
+}
+
+.evidence-pane.collapsed .evidence-title {
+  border-bottom: 0;
 }
 
 .evidence-item {
@@ -1308,6 +1369,41 @@ textarea {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
   gap: 8px;
+}
+
+.assistant-web-preview-wrap {
+  margin-top: 10px;
+  border: 1px solid #dbe4f0;
+  border-radius: 12px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.assistant-web-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e2e8f0;
+  font-size: 12px;
+  color: #334155;
+  background: #f8fbff;
+}
+
+.assistant-web-preview-file {
+  color: #64748b;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assistant-web-preview-frame {
+  width: 100%;
+  height: 420px;
+  border: 0;
+  background: #ffffff;
 }
 
 .assistant-artifact-card {

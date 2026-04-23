@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Agent UI Mock</title>
-    <link rel="stylesheet" href="./style.css?v=20260413a" />
+    <link rel="stylesheet" href="./style.css?v=20260424c" />
     <script>
       window.MathJax = {
         tex: {
@@ -86,7 +86,14 @@
           <div class="side-pane-stack">
             <aside id="taskStatusPane" class="task-status-pane" hidden>
               <div class="task-status-title">
-                <span>Task Status</span>
+                <div class="task-status-tabs" role="tablist" aria-label="Task panel view">
+                  <button id="taskViewStatusBtn" class="task-view-tab active" type="button" role="tab" aria-selected="true">
+                    Task Status
+                  </button>
+                  <button id="taskViewEvidenceBtn" class="task-view-tab" type="button" role="tab" aria-selected="false">
+                    Evidence
+                  </button>
+                </div>
                 <div class="task-status-actions">
                   <div id="taskStatusUsage" class="task-status-usage"></div>
                   <button id="taskRetryBtn" class="pane-toggle-btn" type="button" aria-label="Retry last request">
@@ -106,22 +113,12 @@
               <div id="taskStatusList" class="task-status-list"></div>
             </aside>
 
-            <aside id="evidencePane" class="evidence-pane" hidden>
-              <div class="evidence-title">
-                <span>Evidence</span>
-                <button id="evidenceToggleBtn" class="pane-toggle-btn" type="button" aria-label="Collapse evidence">
-                  Collapse
-                </button>
-              </div>
-              <div id="evidenceList" class="evidence-list"></div>
-            </aside>
-
             <aside id="htmlPreviewPane" class="html-preview" hidden>
               <div class="html-preview-title">
                 <span>HTML Preview</span>
                 <button id="htmlPreviewCloseBtn" class="html-preview-close" type="button" aria-label="Close HTML preview">Close</button>
               </div>
-              <iframe id="htmlPreviewFrame" class="html-preview-frame" sandbox="allow-scripts allow-forms"></iframe>
+              <iframe id="htmlPreviewFrame" class="html-preview-frame" sandbox="allow-scripts allow-forms allow-same-origin"></iframe>
             </aside>
           </div>
         </div>
@@ -165,7 +162,7 @@
           <iframe
             id="artifactPreviewFrameModal"
             class="artifact-modal-frame"
-            sandbox="allow-scripts allow-forms"
+            sandbox="allow-scripts allow-forms allow-same-origin"
             hidden
           ></iframe>
           <pre id="artifactPreviewText" class="artifact-modal-text" hidden></pre>
@@ -173,6 +170,6 @@
       </div>
     </div>
 
-    <script type="module" src="./app.js?v=20260414a"></script>
+    <script type="module" src="./app.js?v=20260424c"></script>
   </body>
 </html>

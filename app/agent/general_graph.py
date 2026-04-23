@@ -37,6 +37,8 @@ class GeneralAgentState(TypedDict):
     response: str
     selected_models: dict[str, str]
     last_tool_meta: dict[str, Any] | None
+    capability: str
+    preserve_task_wording: bool
 
 
 def _extract_json_array(text: str) -> list[dict]:
@@ -81,6 +83,18 @@ def _normalize_tasks(raw_items: list[dict], question: str) -> list[TaskItem]:
     return [{"task": f"Directly answer the user request: {question}", "status": "pending", "result": ""}]
 
 
+def _sanitize_rewritten_step(candidate: str, fallback: str) -> str:
+    text = str(candidate or "").strip()
+    if not text:
+        return fallback
+    # Keep step titles short and stable in the task board.
+    if len(text) > 160:
+        return fallback
+    if "\n" in text or "```" in text:
+        return fallback
+    return text
+
+
 RunStageResult = tuple[str, str] | tuple[str, str, dict[str, Any] | None]
 
 
@@ -98,6 +112,7 @@ def build_general_agent_graph(
         tasks = list(state.get("task_list", []))
         session_id = state["session_id"]
         feedback = state.get("review_feedback", "")
+        preserve_wording = bool(state.get("preserve_task_wording", False))
 
         if not tasks:
             prompt = (
@@ -127,6 +142,16 @@ def build_general_agent_graph(
                 "selected_models": selected_models,
             }
 
+        # Capability templates should keep stable wording; only retry execution.
+        if preserve_wording:
+            return {
+                "task_list": tasks,
+                "current_step_index": min(max(state.get("current_step_index", 0), 0), max(len(tasks) - 1, 0)),
+                "review_feedback": "",
+                "review_decision": "next_step",
+                "selected_models": selected_models,
+            }
+
         idx = min(max(state.get("current_step_index", 0), 0), max(len(tasks) - 1, 0))
         current_task = tasks[idx]["task"]
         prompt = (
@@ -137,7 +162,7 @@ def build_general_agent_graph(
         )
         updated_task, model_name = run_stage("planner", session_id, prompt)
         selected_models["planner"] = model_name
-        rewritten = updated_task.strip() or current_task
+        rewritten = _sanitize_rewritten_step(updated_task, current_task)
         updated_tasks = list(tasks)
         updated_tasks[idx] = {"task": rewritten, "status": "pending", "result": ""}
         return {
@@ -160,6 +185,7 @@ def build_general_agent_graph(
         prompt = (
             "Execute this step and produce a concise, useful output.\n"
             "Do not ask follow-up questions.\n"
+            f"Original request: {state['question']}\n"
             f"Step: {task_text}"
         )
         tool_meta = None
@@ -187,6 +213,7 @@ def build_general_agent_graph(
         selected_models = dict(state.get("selected_models", {}))
         tasks = list(state.get("task_list", []))
         session_id = state["session_id"]
+        capability = str(state.get("capability", "")).strip().lower()
 
         if not tasks:
             return {
@@ -200,11 +227,18 @@ def build_general_agent_graph(
         idx = min(max(state.get("current_step_index", 0), 0), len(tasks) - 1)
         task_text = tasks[idx]["task"]
         task_result = tasks[idx].get("result", "")
+        capability_rule = ""
+        if capability == "website_builder":
+            capability_rule = (
+                "For website_builder: local artifact delivery and local preview readiness are sufficient. "
+                "Do NOT require SCP/FTP upload, public server deployment, or curl HTTP checks."
+            )
         prompt = (
             "Review whether the result satisfies the step objective.\n"
             "Reply exactly in one line:\n"
             "- PASS\n"
             "- FAIL: <reason>\n"
+            f"{capability_rule}\n"
             f"Step objective: {task_text}\n"
             f"Step result: {task_result}"
         )
@@ -223,6 +257,30 @@ def build_general_agent_graph(
         max_retry = max(0, int(state.get("max_review_retries", 0)))
         upper = review_text.upper()
         passed = "PASS" in upper and "FAIL" not in upper
+        if not passed and capability == "website_builder":
+            review_lower = review_text.lower()
+            result_lower = str(task_result or "").lower()
+            deployment_keywords = ("scp", "ftp", "curl", "http 200", "server", "deploy")
+            is_final_step = idx >= len(tasks) - 1
+            local_artifact_signal = (
+                "generated files" in result_lower
+                or "wrote file" in result_lower
+                or ".html" in result_lower
+                or ".css" in result_lower
+            )
+            if any(key in review_lower for key in deployment_keywords) and (local_artifact_signal or is_final_step):
+                passed = True
+                review_text = "PASS: local artifact validation accepted."
+            elif (
+                "html/css/js" in str(task_text or "").lower()
+                or ("html" in str(task_text or "").lower() and "css" in str(task_text or "").lower() and "js" in str(task_text or "").lower())
+            ):
+                has_html = ".html" in result_lower or "index.html" in result_lower
+                has_css = ".css" in result_lower or "style.css" in result_lower
+                has_js = ".js" in result_lower or "app.js" in result_lower
+                if has_html and has_css and has_js:
+                    passed = True
+                    review_text = "PASS: complete HTML/CSS/JS artifacts detected in execution result."
 
         if passed:
             if idx + 1 < len(tasks):

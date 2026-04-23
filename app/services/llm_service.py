@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import zipfile
 from collections.abc import AsyncGenerator, Generator
 from datetime import datetime, timezone
@@ -80,7 +81,7 @@ _CAPABILITY_TASK_TEMPLATES: dict[str, list[str]] = {
     "website_builder": [
         "Plan the information architecture and page sections",
         "Implement complete HTML/CSS/JS",
-        "Deploy and validate the website",
+        "Validate local preview and artifact completeness",
         "Prepare delivery notes and provide final output",
     ],
     "slide_builder": [
@@ -434,6 +435,7 @@ class ChatService:
       <p>Open <code>index.html</code> directly to preview the page.</p>
     </section>
   </main>
+  <script src="./app.js"></script>
 </body>
 </html>
 """
@@ -472,16 +474,28 @@ ul { padding-left: 18px; line-height: 1.75; }
   .hero, .section { padding: 18px; }
 }
 """
+        app_js = """(() => {
+  // Keep fallback page alive even if a generated script is missing.
+  const root = document.body;
+  if (!root) return;
+  if (!root.children.length) {
+    const note = document.createElement("p");
+    note.textContent = "Preview is ready.";
+    root.appendChild(note);
+  }
+})();
+"""
         readme = """# Website Artifacts
 
 ## Included files
 - `index.html`
 - `style.css`
+- `app.js`
 
 ## Local run
 Open `index.html` directly in your browser.
 """
-        return {"index.html": index_html, "style.css": style_css, "README.md": readme}
+        return {"index.html": index_html, "style.css": style_css, "app.js": app_js, "README.md": readme}
 
     def _fallback_slide_files(self, user_message: str) -> dict[str, str]:
         title = "AI Agent Architecture Review"
@@ -514,6 +528,22 @@ Open `index.html` directly in your browser.
 """
         return {"slides.html": slides_html, "speaker_notes.md": notes}
 
+    def _materialize_capability_fallback_artifacts(self, *, capability: str, session_id: str, user_message: str) -> list[dict[str, Any]]:
+        if capability == "website_builder":
+            fallback_files = self._fallback_website_files(user_message)
+        elif capability == "slide_builder":
+            fallback_files = self._fallback_slide_files(user_message)
+        else:
+            return []
+
+        created: list[dict[str, Any]] = []
+        for relative_path, content in fallback_files.items():
+            written = self._write_artifact_if_changed(session_id, relative_path, content)
+            if written:
+                created.append(written)
+        self._cleanup_capability_helper_dirs(session_id)
+        return created
+
     def _generate_capability_files_with_llm(
         self,
         *,
@@ -527,9 +557,13 @@ Open `index.html` directly in your browser.
     ) -> dict[str, str]:
         if capability == "website_builder":
             prompt = (
-                "Return JSON only with keys: index_html, style_css, readme_md.\n"
+                "Return JSON only with keys: index_html, style_css, app_js, readme_md.\n"
                 "Generate practical website artifacts according to the user request.\n"
-                "Keep HTML and CSS complete and runnable.\n"
+                "Keep HTML/CSS/JS complete and runnable.\n"
+                "Do NOT output generic sample/template pages.\n"
+                "Do NOT use placeholder lines such as 'Welcome to My Website', "
+                "'Home About Contact', or 'This page is generated as an artifact'.\n"
+                "Reflect concrete requirements from the user request.\n"
                 f"User request:\n{user_message}\n\n"
                 f"Execution summary:\n{final_text}"
             )
@@ -544,9 +578,13 @@ Open `index.html` directly in your browser.
             parsed = self._extract_json_object(response_text)
             index_html = str(parsed.get("index_html", "")).strip()
             style_css = str(parsed.get("style_css", "")).strip()
+            app_js = str(parsed.get("app_js", "")).strip()
             readme_md = str(parsed.get("readme_md", "")).strip()
             if index_html and style_css:
-                return {"index.html": index_html, "style.css": style_css, "README.md": readme_md or "# Delivery\n"}
+                files = {"index.html": index_html, "style.css": style_css, "README.md": readme_md or "# Delivery\n"}
+                if app_js:
+                    files["app.js"] = app_js
+                return files
             return {}
 
         if capability == "slide_builder":
@@ -573,6 +611,65 @@ Open `index.html` directly in your browser.
 
         return {}
 
+    def _generate_website_files_for_step(
+        self,
+        *,
+        session_id: str,
+        provider_name: str,
+        requested_model: str | None,
+        provider_options: dict[str, Any] | None,
+        step_prompt: str,
+    ) -> tuple[dict[str, str], str]:
+        """Generate a complete website bundle for one executor step."""
+        fallback_files = self._fallback_website_files(step_prompt)
+        prompt = (
+            "Return JSON only with keys: index_html, style_css, app_js, readme_md.\n"
+            "You are executing one website task and must provide complete deliverables.\n"
+            "Requirements:\n"
+            "- index_html must be a full HTML document with practical content.\n"
+            "- style_css and app_js must be non-empty.\n"
+            "- Do NOT output generic sample/template pages.\n"
+            "- Avoid placeholder lines such as 'Welcome to My Website', 'Home About Contact',"
+            " or 'This page is generated as an artifact'.\n"
+            "Step context:\n"
+            f"{step_prompt}"
+        )
+        response_text, selected_model = self._complete_with_fallback(
+            stage="executor",
+            session_id=session_id,
+            provider_name=provider_name,
+            requested_model=requested_model,
+            provider_options=provider_options,
+            messages=[
+                {"role": "system", "content": self._system_prompt("general")},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        parsed = self._extract_json_object(response_text)
+        index_html = str(parsed.get("index_html", "")).strip()
+        style_css = str(parsed.get("style_css", "")).strip()
+        app_js = str(parsed.get("app_js", "")).strip()
+        readme_md = str(parsed.get("readme_md", "")).strip()
+
+        if not index_html or self._looks_like_sample_website_html(index_html) or not self._looks_like_html_document(index_html):
+            index_html = str(fallback_files.get("index.html", "")).strip()
+        if not style_css:
+            style_css = str(fallback_files.get("style.css", "")).strip()
+        if not app_js:
+            app_js = str(fallback_files.get("app.js", "")).strip()
+        if not readme_md:
+            readme_md = str(fallback_files.get("README.md", "")).strip()
+
+        return (
+            {
+                "index.html": index_html,
+                "style.css": style_css,
+                "app.js": app_js,
+                "README.md": readme_md,
+            },
+            selected_model,
+        )
+
     def _ensure_capability_artifacts(
         self,
         *,
@@ -587,37 +684,403 @@ Open `index.html` directly in your browser.
         if capability not in {"website_builder", "slide_builder"}:
             return []
         existing = self.list_artifacts(session_id)
-        if existing:
+        created: list[dict[str, Any]] = []
+
+        if capability == "website_builder":
+            fallback_files = self._fallback_website_files(user_message)
+            generated_files: dict[str, str] = {}
+            raw_index_text = self._find_artifact_content(session_id, existing, ("index.html",))
+            index_text = str(raw_index_text or "").strip()
+            style_text = self._find_artifact_content(session_id, existing, ("style.css", "styles.css"))
+            app_js_text = self._find_artifact_content(session_id, existing, ("app.js", "script.js", "main.js"))
+            readme_text = self._find_artifact_content(session_id, existing, ("README.md", "readme.md"))
+            if index_text and self._looks_like_sample_website_html(index_text):
+                index_text = ""
+            if not index_text:
+                index_text = self._find_first_usable_website_html(session_id=session_id, artifacts=existing)
+            if not index_text and str(raw_index_text or "").strip():
+                # Keep user-generated HTML even when it is simpler than our heuristics.
+                index_text = str(raw_index_text or "").strip()
+
+            if not index_text:
+                generated_files = self._generate_capability_files_with_llm(
+                    capability=capability,
+                    session_id=session_id,
+                    user_message=user_message,
+                    final_text=final_text,
+                    provider_name=provider_name,
+                    requested_model=requested_model,
+                    provider_options=provider_options,
+                )
+                if generated_files:
+                    generated_index = str(generated_files.get("index.html", "")).strip()
+                    if self._looks_like_usable_website_html(generated_index):
+                        index_text = generated_index
+                    style_text = style_text or str(generated_files.get("style.css") or generated_files.get("styles.css") or "").strip()
+                    app_js_text = app_js_text or str(generated_files.get("app.js", "")).strip()
+                    readme_text = readme_text or str(generated_files.get("README.md", "")).strip()
+
+            index_text = index_text or str(fallback_files.get("index.html", "")).strip()
+            style_text = style_text or str(fallback_files.get("style.css", "")).strip()
+            app_js_text = app_js_text or str(generated_files.get("app.js", "")).strip() or str(fallback_files.get("app.js", "")).strip()
+            readme_text = readme_text or str(fallback_files.get("README.md", "")).strip()
+
+            target_files = {
+                "index.html": index_text,
+                "style.css": style_text,
+                "app.js": app_js_text,
+                "README.md": readme_text,
+            }
+            for relative_path, content in target_files.items():
+                written = self._write_artifact_if_changed(session_id, relative_path, content)
+                if written:
+                    created.append(written)
+
+            # Ensure local asset links referenced by index.html are present.
+            js_paths = self._extract_local_asset_paths(index_text, allowed_suffixes=(".js",))
+            css_paths = self._extract_local_asset_paths(index_text, allowed_suffixes=(".css",))
+            for asset_path in js_paths:
+                if self._read_artifact_text(session_id, asset_path):
+                    continue
+                fallback_js = app_js_text or str(fallback_files.get("app.js", "")).strip()
+                written = self._write_artifact_if_changed(session_id, asset_path, fallback_js)
+                if written:
+                    created.append(written)
+            for asset_path in css_paths:
+                if self._read_artifact_text(session_id, asset_path):
+                    continue
+                fallback_css = style_text or str(fallback_files.get("style.css", "")).strip()
+                written = self._write_artifact_if_changed(session_id, asset_path, fallback_css)
+                if written:
+                    created.append(written)
+
+            self._cleanup_capability_helper_dirs(session_id)
+            return created
+
+        # slide_builder
+        fallback_files = self._fallback_slide_files(user_message)
+        slides_text = self._find_artifact_content(session_id, existing, ("slides.html",))
+        notes_text = self._find_artifact_content(session_id, existing, ("speaker_notes.md", "notes.md"))
+
+        if not slides_text and not notes_text:
+            generated_files = self._generate_capability_files_with_llm(
+                capability=capability,
+                session_id=session_id,
+                user_message=user_message,
+                final_text=final_text,
+                provider_name=provider_name,
+                requested_model=requested_model,
+                provider_options=provider_options,
+            )
+            if not generated_files:
+                generated_files = fallback_files
+            slides_text = str(generated_files.get("slides.html", "")).strip()
+            notes_text = str(generated_files.get("speaker_notes.md", "")).strip()
+
+        slides_text = slides_text or str(fallback_files.get("slides.html", "")).strip()
+        notes_text = notes_text or str(fallback_files.get("speaker_notes.md", "")).strip()
+
+        target_files = {
+            "slides.html": slides_text,
+            "speaker_notes.md": notes_text,
+        }
+        for relative_path, content in target_files.items():
+            written = self._write_artifact_if_changed(session_id, relative_path, content)
+            if written:
+                created.append(written)
+
+        self._cleanup_capability_helper_dirs(session_id)
+        return created
+
+    def _extract_local_asset_paths(self, html_text: str, *, allowed_suffixes: tuple[str, ...]) -> list[str]:
+        if not isinstance(html_text, str) or not html_text.strip():
+            return []
+        candidates = re.findall(r"""(?:src|href)\s*=\s*["']([^"']+)["']""", html_text, flags=re.IGNORECASE)
+        results: list[str] = []
+        seen: set[str] = set()
+        for raw in candidates:
+            href = str(raw or "").strip()
+            if not href:
+                continue
+            parsed = urlparse(href)
+            if parsed.scheme or href.startswith("//"):
+                continue
+            path = str(parsed.path or "").strip()
+            if not path:
+                continue
+            path = path.replace("\\", "/")
+            if path.startswith("/"):
+                path = path.lstrip("/")
+            if path.startswith("./"):
+                path = path[2:]
+            if not path or ".." in path.split("/"):
+                continue
+            lower_path = path.lower()
+            if not any(lower_path.endswith(suffix) for suffix in allowed_suffixes):
+                continue
+            if lower_path in seen:
+                continue
+            seen.add(lower_path)
+            results.append(path)
+        return results
+
+    def _looks_like_html_document(self, text: str) -> bool:
+        if not isinstance(text, str):
+            return False
+        trimmed = text.strip()
+        if not trimmed:
+            return False
+        if re.search(r"<!doctype\s+html", trimmed, flags=re.IGNORECASE):
+            return True
+        if re.search(r"<html[\s>].*</html>", trimmed, flags=re.IGNORECASE | re.DOTALL):
+            return True
+        has_structural_tags = bool(
+            re.search(
+                r"<(head|body|main|section|article|header|footer|nav|div|h1|h2|h3|p|ul|ol|table)(\s|>)",
+                trimmed,
+                flags=re.IGNORECASE,
+            )
+        )
+        has_any_tag = bool(re.search(r"<[a-z][^>]*>", trimmed, flags=re.IGNORECASE))
+        return has_structural_tags and has_any_tag
+
+    def _looks_like_sample_website_html(self, text: str) -> bool:
+        lowered = re.sub(r"\s+", " ", str(text or "").strip()).lower()
+        if not lowered:
+            return False
+        sample_phrases = (
+            "welcome to my website",
+            "your vision, built fast",
+            "this page is generated as an artifact",
+            "website deployed successfully",
+            "validation: all checks passed",
+            "sample website",
+            "template website",
+        )
+        if any(phrase in lowered for phrase in sample_phrases):
+            return True
+        if "home about contact" in lowered and "welcome" in lowered:
+            return True
+        if "hello world" in lowered and len(lowered) < 1200:
+            return True
+        return False
+
+    def _looks_like_usable_website_html(self, text: str) -> bool:
+        if not self._looks_like_html_document(text):
+            return False
+        trimmed = str(text).strip()
+        if self._looks_like_sample_website_html(trimmed):
+            return False
+
+        has_layout = bool(
+            re.search(
+                r"<(main|section|article|header|footer|nav|aside|div)(\s|>)",
+                trimmed,
+                flags=re.IGNORECASE,
+            )
+        )
+        section_like_count = len(re.findall(r"<(section|article|main)(\s|>)", trimmed, flags=re.IGNORECASE))
+        heading_count = len(re.findall(r"<h[1-6](\s|>)", trimmed, flags=re.IGNORECASE))
+        paragraph_count = len(re.findall(r"<p(\s|>)", trimmed, flags=re.IGNORECASE))
+        tag_count = len(re.findall(r"<[a-z][^>]*>", trimmed, flags=re.IGNORECASE))
+        has_title = bool(re.search(r"<title[^>]*>.+?</title>", trimmed, flags=re.IGNORECASE | re.DOTALL))
+        has_style_support = bool(re.search(r"<link[^>]+stylesheet|<style[\s>]", trimmed, flags=re.IGNORECASE))
+        plain_text = self._strip_html(trimmed)
+        if tag_count < 8 and len(trimmed) < 700:
+            return False
+        if section_like_count < 1 and heading_count < 2:
+            return False
+        if paragraph_count < 1:
+            return False
+        if len(plain_text) < 40 and len(trimmed) < 450:
+            return False
+        return has_layout and (has_title or has_style_support)
+
+    def _read_artifact_text(self, session_id: str, relative_path: str) -> str | None:
+        try:
+            target = self.resolve_artifact_file(session_id, relative_path)
+        except Exception:
+            return None
+        try:
+            return target.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return None
+
+    def _find_artifact_content(
+        self,
+        session_id: str,
+        artifacts: list[dict[str, Any]],
+        candidate_names: tuple[str, ...],
+    ) -> str:
+        if not artifacts:
+            return ""
+        normalized: list[str] = []
+        for item in artifacts:
+            relative_path = str(item.get("relative_path") or item.get("name") or "").strip()
+            if not relative_path:
+                continue
+            normalized.append(relative_path.replace("\\", "/"))
+        lowered = {path.lower(): path for path in normalized}
+
+        for name in candidate_names:
+            hit = lowered.get(name.lower())
+            if hit:
+                text = self._read_artifact_text(session_id, hit)
+                if isinstance(text, str) and text.strip():
+                    return text.strip()
+
+        for path in normalized:
+            lower_path = path.lower()
+            for name in candidate_names:
+                suffix = "/" + name.lower()
+                if lower_path.endswith(suffix):
+                    text = self._read_artifact_text(session_id, path)
+                    if isinstance(text, str) and text.strip():
+                        return text.strip()
+        return ""
+
+    def _find_first_usable_website_html(
+        self,
+        *,
+        session_id: str,
+        artifacts: list[dict[str, Any]],
+    ) -> str:
+        if not artifacts:
+            return ""
+        html_paths: list[str] = []
+        for item in artifacts:
+            relative_path = str(item.get("relative_path") or item.get("name") or "").strip().replace("\\", "/")
+            if not relative_path:
+                continue
+            lower = relative_path.lower()
+            if not (lower.endswith(".html") or lower.endswith(".htm")):
+                continue
+            html_paths.append(relative_path)
+        if not html_paths:
+            return ""
+
+        html_paths.sort(
+            key=lambda path: (
+                0 if path.lower() == "index.html" or path.lower().endswith("/index.html") else 1,
+                len(path),
+                path.lower(),
+            )
+        )
+        for path in html_paths:
+            text = self._read_artifact_text(session_id, path)
+            if not isinstance(text, str) or not text.strip():
+                continue
+            if self._looks_like_usable_website_html(text):
+                return text.strip()
+        return ""
+
+    def _write_artifact_if_changed(self, session_id: str, relative_path: str, content: str) -> dict[str, Any] | None:
+        if not isinstance(content, str) or not content.strip():
+            return None
+        current_text = self._read_artifact_text(session_id, relative_path)
+        if isinstance(current_text, str) and current_text.strip() == content.strip():
+            return None
+        return self._write_artifact_file(session_id, relative_path, content)
+
+    def _ensure_website_core_assets_for_step(self, session_id: str) -> list[dict[str, Any]]:
+        """Ensure style.css/app.js exist when a website HTML file is already generated."""
+        try:
+            artifacts = self.list_artifacts(session_id)
+        except Exception:
             return []
 
-        files = self._generate_capability_files_with_llm(
-            capability=capability,
-            session_id=session_id,
-            user_message=user_message,
-            final_text=final_text,
-            provider_name=provider_name,
-            requested_model=requested_model,
-            provider_options=provider_options,
-        )
-        if not files:
-            files = (
-                self._fallback_website_files(user_message)
-                if capability == "website_builder"
-                else self._fallback_slide_files(user_message)
-            )
-
-        created: list[dict[str, Any]] = []
-        for relative_path, content in files.items():
-            if not isinstance(content, str) or not content.strip():
+        has_html = False
+        has_css = False
+        has_js = False
+        for item in artifacts:
+            relative_path = str(item.get("relative_path") or item.get("name") or "").strip().replace("\\", "/").lower()
+            if not relative_path:
                 continue
-            created.append(self._write_artifact_file(session_id, relative_path, content))
+            if relative_path.endswith(".html") or relative_path.endswith(".htm"):
+                has_html = True
+            if relative_path.endswith(".css"):
+                has_css = True
+            if relative_path.endswith(".js"):
+                has_js = True
+
+        if not has_html:
+            return []
+
+        fallback_files = self._fallback_website_files("")
+        created: list[dict[str, Any]] = []
+        if not has_css:
+            written = self._write_artifact_if_changed(session_id, "style.css", str(fallback_files.get("style.css", "")).strip())
+            if written:
+                created.append(written)
+        if not has_js:
+            written = self._write_artifact_if_changed(session_id, "app.js", str(fallback_files.get("app.js", "")).strip())
+            if written:
+                created.append(written)
         return created
+
+    def _cleanup_capability_helper_dirs(self, session_id: str) -> None:
+        helper_dirs = ("website_builder", "slide_builder")
+        for relative_dir in helper_dirs:
+            try:
+                target_dir = self._resolve_artifact_path(session_id, relative_dir)
+            except Exception:
+                continue
+            if target_dir.exists() and target_dir.is_dir():
+                try:
+                    shutil.rmtree(target_dir, ignore_errors=True)
+                except Exception:
+                    continue
+
+    def repair_web_preview_assets(self, session_id: str) -> None:
+        """Best-effort repair for legacy website artifacts missing local js/css files."""
+        try:
+            artifacts = self.list_artifacts(session_id)
+        except Exception:
+            return
+        if not artifacts:
+            return
+
+        index_text = self._find_artifact_content(session_id, artifacts, ("index.html",))
+        if not index_text:
+            return
+        fallback_files = self._fallback_website_files("")
+        style_text = self._find_artifact_content(session_id, artifacts, ("style.css", "styles.css")) or str(
+            fallback_files.get("style.css", "")
+        ).strip()
+        app_js_text = self._find_artifact_content(session_id, artifacts, ("app.js", "script.js", "main.js")) or str(
+            fallback_files.get("app.js", "")
+        ).strip()
+
+        js_paths = self._extract_local_asset_paths(index_text, allowed_suffixes=(".js",))
+        css_paths = self._extract_local_asset_paths(index_text, allowed_suffixes=(".css",))
+        for asset_path in js_paths:
+            if self._read_artifact_text(session_id, asset_path):
+                continue
+            try:
+                self._write_artifact_if_changed(session_id, asset_path, app_js_text)
+            except Exception:
+                continue
+        for asset_path in css_paths:
+            if self._read_artifact_text(session_id, asset_path):
+                continue
+            try:
+                self._write_artifact_if_changed(session_id, asset_path, style_text)
+            except Exception:
+                continue
 
     def list_artifacts(self, session_id: str) -> list[dict[str, Any]]:
         session_dir = self._artifact_session_dir(session_id)
         if not session_dir.exists():
             return []
         items: list[dict[str, Any]] = []
+        seen_relative: set[str] = set()
+        root_style = session_dir / "style.css"
+        root_style_bytes: bytes | None = None
+        if root_style.exists() and root_style.is_file():
+            try:
+                root_style_bytes = root_style.read_bytes()
+            except Exception:
+                root_style_bytes = None
         for path in sorted(session_dir.rglob("*"), key=lambda p: str(p).lower()):
             if not path.is_file():
                 continue
@@ -626,6 +1089,18 @@ Open `index.html` directly in your browser.
             previewable = self._is_previewable_artifact(path)
             mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
             relative_path = str(path.relative_to(session_dir).as_posix())
+            relative_lower = relative_path.lower()
+            if relative_lower.startswith("website_builder/") or relative_lower.startswith("slide_builder/"):
+                continue
+            if relative_lower == "styles.css" and root_style_bytes is not None:
+                try:
+                    if path.read_bytes() == root_style_bytes:
+                        continue
+                except Exception:
+                    pass
+            if relative_lower in seen_relative:
+                continue
+            seen_relative.add(relative_lower)
             items.append(
                 {
                     "name": path.name,
@@ -719,40 +1194,66 @@ Open `index.html` directly in your browser.
         if not payload:
             raise ValueError("file_write expects JSON object input.")
 
-        raw_path = str(payload.get("path") or payload.get("file") or "").strip()
-        if not raw_path:
-            raise ValueError("file_write input missing 'path'.")
-        if len(raw_path) > 200:
-            raise ValueError("file_write path is too long.")
+        def _write_one(raw_path: Any, raw_content: Any, overwrite: bool) -> dict[str, Any]:
+            path_text = str(raw_path or "").strip()
+            if not path_text:
+                raise ValueError("file_write input missing 'path'.")
+            if len(path_text) > 200:
+                raise ValueError("file_write path is too long.")
 
-        normalized_path = raw_path.replace("\\", "/").lstrip("/")
-        path_parts = [part for part in normalized_path.split("/") if part and part != "."]
-        if not path_parts:
-            raise ValueError("file_write path is empty after normalization.")
-        if any(part == ".." for part in path_parts):
-            raise ValueError("file_write path cannot escape artifact workspace.")
+            normalized_path = path_text.replace("\\", "/").lstrip("/")
+            path_parts = [part for part in normalized_path.split("/") if part and part != "."]
+            if not path_parts:
+                raise ValueError("file_write path is empty after normalization.")
+            if any(part == ".." for part in path_parts):
+                raise ValueError("file_write path cannot escape artifact workspace.")
 
-        relative_path = "/".join(path_parts)
-        content = payload.get("content", "")
-        if not isinstance(content, str):
-            content = str(content)
-        if len(content) > _ARTIFACT_WRITE_MAX_CHARS:
-            raise ValueError(f"file_write content too large (>{_ARTIFACT_WRITE_MAX_CHARS} chars).")
+            relative_path = "/".join(path_parts)
+            content = raw_content if isinstance(raw_content, str) else str(raw_content or "")
+            if len(content) > _ARTIFACT_WRITE_MAX_CHARS:
+                raise ValueError(f"file_write content too large (>{_ARTIFACT_WRITE_MAX_CHARS} chars).")
 
-        overwrite = bool(payload.get("overwrite", True))
-        target = self._resolve_artifact_path(session_id, relative_path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if target.exists() and not overwrite:
-            raise ValueError(f"file_write target already exists: {relative_path}")
-        target.write_text(content, encoding="utf-8")
+            target = self._resolve_artifact_path(session_id, relative_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists() and not overwrite:
+                raise ValueError(f"file_write target already exists: {relative_path}")
+            target.write_text(content, encoding="utf-8")
+            return {
+                "name": target.name,
+                "relative_path": relative_path,
+                "size_bytes": int(target.stat().st_size),
+                "previewable": self._is_previewable_artifact(target),
+            }
 
-        result = {
-            "ok": True,
-            "name": target.name,
-            "relative_path": str(Path(relative_path)),
-            "size_bytes": int(target.stat().st_size),
-            "previewable": self._is_previewable_artifact(target),
-        }
+        default_overwrite = bool(payload.get("overwrite", True))
+        batch_files = payload.get("files")
+        if isinstance(batch_files, list):
+            written: list[dict[str, Any]] = []
+            for item in batch_files:
+                if not isinstance(item, dict):
+                    continue
+                item_path = item.get("path") or item.get("file")
+                if not item_path:
+                    continue
+                item_overwrite = bool(item.get("overwrite", default_overwrite))
+                metadata = _write_one(item_path, item.get("content", ""), item_overwrite)
+                written.append(metadata)
+            if not written:
+                raise ValueError("file_write batch input missing valid files.")
+            result = {
+                "ok": True,
+                "count": len(written),
+                "files": written,
+                # Backward-compatible fields for single-artifact callers.
+                "name": written[0]["name"],
+                "relative_path": written[0]["relative_path"],
+                "size_bytes": written[0]["size_bytes"],
+                "previewable": bool(written[0]["previewable"]),
+            }
+            return json.dumps(result, ensure_ascii=False)
+
+        metadata = _write_one(payload.get("path") or payload.get("file"), payload.get("content", ""), default_overwrite)
+        result = {"ok": True, **metadata}
         return json.dumps(result, ensure_ascii=False)
 
     def _strip_html(self, content: str) -> str:
@@ -865,13 +1366,33 @@ Open `index.html` directly in your browser.
             allowed_tools.append("file_write")
             tool_lines.append(
                 "file_write: write artifact files under runtime/artifacts/<session_id>/ with JSON input "
-                '{"path":"<name.ext>","content":"<text>","overwrite":true}.'
+                '{"path":"<name.ext>","content":"<text>","overwrite":true} '
+                'or batch JSON {"files":[{"path":"index.html","content":"..."},{"path":"style.css","content":"..."}]}.'
             )
 
         allowed_tool_text = "|".join(allowed_tools)
         tool_actions = (
             f'{{"action":"TOOL","tool":"{allowed_tool_text}","input":"<tool input>","reason":"<why needed>"}}'
             if allowed_tools
+            else ""
+        )
+        step_prompt_text = str(step_prompt or "")
+        step_prompt_lower = step_prompt_text.lower()
+        step_title_match = re.search(r"(?im)^\s*Step:\s*(.+?)\s*$", step_prompt_text)
+        step_title_text = step_title_match.group(1).strip() if step_title_match else step_prompt_text.strip().splitlines()[0] if step_prompt_text.strip() else ""
+        step_title_lower = step_title_text.lower()
+        is_website_full_impl_step = (
+            "website_builder" in step_prompt_lower
+            and (
+                "implement complete html/css/js" in step_title_lower
+                or "complete html/css/js" in step_title_lower
+                or ("html" in step_title_lower and "css" in step_title_lower and "js" in step_title_lower)
+            )
+        )
+        required_tool_instruction = (
+            "For this step you MUST use file_write and create complete HTML/CSS/JS deliverables. "
+            "Prefer one batch call with files: index.html, style.css, app.js."
+            if is_website_full_impl_step and allow_file_write
             else ""
         )
 
@@ -884,6 +1405,7 @@ Open `index.html` directly in your browser.
                 if allowed_tools
                 else "No tools enabled for this request.\n"
             )
+            + (required_tool_instruction + "\n" if required_tool_instruction else "")
             + "Return JSON object only.\n"
             + (
                 "Use one of these forms:\n"
@@ -910,8 +1432,34 @@ Open `index.html` directly in your browser.
         decision = self._extract_json_object(decision_text)
         action = str(decision.get("action", "")).strip().upper()
         if action != "TOOL":
-            response = str(decision.get("response", "")).strip()
-            return (response or decision_text.strip() or "Step executed."), selected_model, None
+            if is_website_full_impl_step and allow_file_write and "file_write" in allowed_tools:
+                forced_files, generation_model = self._generate_website_files_for_step(
+                    session_id=session_id,
+                    provider_name=provider_name,
+                    requested_model=requested_model,
+                    provider_options=provider_options,
+                    step_prompt=step_prompt,
+                )
+                if generation_model:
+                    selected_model = generation_model
+                forced_payload = {
+                    "files": [
+                        {"path": "index.html", "content": str(forced_files.get("index.html", "")), "overwrite": True},
+                        {"path": "style.css", "content": str(forced_files.get("style.css", "")), "overwrite": True},
+                        {"path": "app.js", "content": str(forced_files.get("app.js", "")), "overwrite": True},
+                        {"path": "README.md", "content": str(forced_files.get("README.md", "")), "overwrite": True},
+                    ]
+                }
+                decision = {
+                    "action": "TOOL",
+                    "tool": "file_write",
+                    "input": json.dumps(forced_payload, ensure_ascii=False),
+                    "reason": "Enforce complete HTML/CSS/JS delivery for website task.",
+                }
+                action = "TOOL"
+            else:
+                response = str(decision.get("response", "")).strip()
+                return (response or decision_text.strip() or "Step executed."), selected_model, None
 
         tool_name = str(decision.get("tool", "")).strip().lower()
         tool_input = str(decision.get("input", "")).strip()
@@ -946,14 +1494,82 @@ Open `index.html` directly in your browser.
         elif tool_name == "file_write":
             write_meta = self._extract_json_object(tool_output)
             if write_meta:
-                tool_meta["artifact"] = {
-                    "name": write_meta.get("name"),
-                    "relative_path": write_meta.get("relative_path"),
-                    "size_bytes": write_meta.get("size_bytes"),
-                    "previewable": bool(write_meta.get("previewable", False)),
-                }
-                tool_meta["source"] = str(write_meta.get("relative_path") or write_meta.get("name") or "")
+                parsed_artifacts: list[dict[str, Any]] = []
+                raw_files = write_meta.get("files")
+                if isinstance(raw_files, list):
+                    for item in raw_files:
+                        if not isinstance(item, dict):
+                            continue
+                        name = str(item.get("name") or "").strip()
+                        relative_path = str(item.get("relative_path") or "").strip()
+                        if not name and not relative_path:
+                            continue
+                        parsed_artifacts.append(
+                            {
+                                "name": name,
+                                "relative_path": relative_path,
+                                "size_bytes": int(item.get("size_bytes") or 0),
+                                "previewable": bool(item.get("previewable", False)),
+                            }
+                        )
+                if not parsed_artifacts:
+                    parsed_artifacts.append(
+                        {
+                            "name": str(write_meta.get("name") or "").strip(),
+                            "relative_path": str(write_meta.get("relative_path") or "").strip(),
+                            "size_bytes": int(write_meta.get("size_bytes") or 0),
+                            "previewable": bool(write_meta.get("previewable", False)),
+                        }
+                    )
+                parsed_artifacts = [
+                    item for item in parsed_artifacts if str(item.get("name") or "").strip() or str(item.get("relative_path") or "").strip()
+                ]
+                if parsed_artifacts:
+                    tool_meta["artifacts"] = parsed_artifacts
+                    tool_meta["artifact"] = parsed_artifacts[0]
+                    first_source = str(parsed_artifacts[0].get("relative_path") or parsed_artifacts[0].get("name") or "").strip()
+                    if first_source:
+                        tool_meta["source"] = first_source
 
+            if is_website_full_impl_step and str(tool_meta.get("status", "")).lower() == "ok":
+                auto_created = self._ensure_website_core_assets_for_step(session_id)
+                if auto_created:
+                    artifacts_list = tool_meta.get("artifacts") if isinstance(tool_meta.get("artifacts"), list) else []
+                    normalized_existing = {
+                        str(item.get("relative_path") or item.get("name") or "").strip().lower()
+                        for item in artifacts_list
+                        if isinstance(item, dict)
+                    }
+                    for created_item in auto_created:
+                        relative_path = str(created_item.get("relative_path") or created_item.get("name") or "").strip()
+                        if not relative_path:
+                            continue
+                        key = relative_path.lower()
+                        if key in normalized_existing:
+                            continue
+                        artifacts_list.append(
+                            {
+                                "name": str(created_item.get("name") or "").strip(),
+                                "relative_path": relative_path,
+                                "size_bytes": int(created_item.get("size_bytes") or 0),
+                                "previewable": bool(created_item.get("previewable", False)),
+                            }
+                        )
+                        normalized_existing.add(key)
+                    if artifacts_list:
+                        tool_meta["artifacts"] = artifacts_list
+                        tool_meta["artifact"] = artifacts_list[0]
+                    auto_files = [
+                        str(item.get("relative_path") or item.get("name") or "").strip()
+                        for item in auto_created
+                        if isinstance(item, dict)
+                    ]
+                    auto_files = [item for item in auto_files if item]
+                    if auto_files:
+                        tool_meta["auto_generated_files"] = auto_files
+                        tool_output = f"{tool_output}\nAuto-generated missing files: {', '.join(auto_files)}"
+
+        tool_meta["output_excerpt"] = self._shorten(tool_output, max_chars=800)
         synth_prompt = (
             "Based on the executed tool result, complete this step.\n"
             "Output concise actionable text.\n"
@@ -1477,22 +2093,216 @@ Open `index.html` directly in your browser.
         def run_stage(stage: str, run_session_id: str, prompt: str) -> tuple[str, str] | tuple[str, str, dict[str, Any] | None]:
             if stage == "executor":
                 runtime_prompt = prompt
+                step_title_match = re.search(r"(?im)^\s*Step:\s*(.+?)\s*$", str(prompt or ""))
+                step_title = (
+                    step_title_match.group(1).strip()
+                    if step_title_match
+                    else (str(prompt or "").strip().splitlines()[0] if str(prompt or "").strip() else "")
+                )
+                step_title_lower = step_title.lower()
+                website_impl_step = (
+                    capability == "website_builder"
+                    and (
+                        "implement complete html/css/js" in step_title_lower
+                        or ("html" in step_title_lower and "css" in step_title_lower and "js" in step_title_lower)
+                    )
+                )
+                website_validate_step = capability == "website_builder" and (
+                    "validate local preview" in step_title_lower or "artifact completeness" in step_title_lower
+                )
+                website_delivery_step = capability == "website_builder" and (
+                    "prepare delivery notes" in step_title_lower or "final output" in step_title_lower
+                )
+                slide_impl_step = capability == "slide_builder" and (
+                    "produce previewable html slides" in step_title_lower
+                    or ("slides" in step_title_lower and "downloadable files" in step_title_lower)
+                )
+
+                step_allow_file_write = allow_file_write
                 if capability == "website_builder":
-                    runtime_prompt = (
-                        f"{prompt}\n\n"
-                        "Execution policy for website_builder:\n"
-                        "- Prefer creating real artifacts with file_write.\n"
-                        "- Generate at least index.html and a delivery note (README.md).\n"
-                        "- Keep paths relative, for example: index.html, styles.css, app.js, README.md."
-                    )
+                    # Restrict file generation to the actual implementation step.
+                    step_allow_file_write = bool(website_impl_step)
                 elif capability == "slide_builder":
-                    runtime_prompt = (
-                        f"{prompt}\n\n"
-                        "Execution policy for slide_builder:\n"
-                        "- Prefer creating real artifacts with file_write.\n"
-                        "- Generate slides.html and speaker_notes.md at minimum.\n"
-                        "- Keep paths relative, for example: slides.html, speaker_notes.md, assets/theme.css."
+                    step_allow_file_write = bool(slide_impl_step)
+
+                if capability == "website_builder":
+                    if website_impl_step:
+                        runtime_prompt = (
+                            f"{prompt}\n\n"
+                            "Execution policy for website_builder (implementation step):\n"
+                            "- Use file_write to generate complete files.\n"
+                            "- Required files: index.html, style.css, app.js, README.md.\n"
+                            "- Keep paths relative.\n"
+                            "- Do NOT produce generic sample/template pages.\n"
+                            "- Avoid placeholder text such as 'Welcome to My Website' or 'Home About Contact'.\n"
+                            "- The page content must reflect the original request."
+                        )
+                    elif website_validate_step:
+                        runtime_prompt = (
+                            f"{prompt}\n\n"
+                            "Execution policy for website_builder (validation step):\n"
+                            "- Validate local artifacts only.\n"
+                            "- Do NOT require deployment, SCP/FTP, or curl checks.\n"
+                            "- Summarize concise evidence for local preview readiness."
+                        )
+                    elif website_delivery_step:
+                        runtime_prompt = (
+                            f"{prompt}\n\n"
+                            "Execution policy for website_builder (delivery step):\n"
+                            "- Provide concise delivery notes and usage instructions.\n"
+                            "- Do NOT regenerate full website files in this step unless explicitly missing."
+                        )
+                    else:
+                        runtime_prompt = (
+                            f"{prompt}\n\n"
+                            "Execution policy for website_builder (planning step):\n"
+                            "- Focus on information architecture and section plan.\n"
+                            "- Do NOT generate files in this step."
+                        )
+                elif capability == "slide_builder":
+                    if slide_impl_step:
+                        runtime_prompt = (
+                            f"{prompt}\n\n"
+                            "Execution policy for slide_builder (artifact step):\n"
+                            "- Use file_write to generate slides.html and speaker_notes.md.\n"
+                            "- Keep paths relative, for example: slides.html, speaker_notes.md."
+                        )
+                    else:
+                        runtime_prompt = (
+                            f"{prompt}\n\n"
+                            "Execution policy for slide_builder:\n"
+                            "- Focus on structure/content for this step.\n"
+                            "- Do not generate files unless this is the artifact production step."
+                        )
+
+                if capability == "website_builder" and website_impl_step and step_allow_file_write:
+                    generated_files, generation_model = self._generate_website_files_for_step(
+                        session_id=run_session_id,
+                        provider_name=provider_name,
+                        requested_model=requested_model,
+                        provider_options=provider_options,
+                        step_prompt=runtime_prompt,
                     )
+                    write_payload = {
+                        "files": [
+                            {"path": "index.html", "content": str(generated_files.get("index.html", "")), "overwrite": True},
+                            {"path": "style.css", "content": str(generated_files.get("style.css", "")), "overwrite": True},
+                            {"path": "app.js", "content": str(generated_files.get("app.js", "")), "overwrite": True},
+                            {"path": "README.md", "content": str(generated_files.get("README.md", "")), "overwrite": True},
+                        ]
+                    }
+                    tool_output = self._tool_file_write(run_session_id, json.dumps(write_payload, ensure_ascii=False))
+                    write_meta = self._extract_json_object(tool_output)
+                    parsed_artifacts: list[dict[str, Any]] = []
+                    raw_files = write_meta.get("files")
+                    if isinstance(raw_files, list):
+                        for item in raw_files:
+                            if not isinstance(item, dict):
+                                continue
+                            name = str(item.get("name") or "").strip()
+                            relative_path = str(item.get("relative_path") or "").strip()
+                            if not name and not relative_path:
+                                continue
+                            parsed_artifacts.append(
+                                {
+                                    "name": name,
+                                    "relative_path": relative_path,
+                                    "size_bytes": int(item.get("size_bytes") or 0),
+                                    "previewable": bool(item.get("previewable", False)),
+                                }
+                            )
+                    tool_meta: dict[str, Any] = {
+                        "tool": "file_write",
+                        "input": "batch:index.html,style.css,app.js,README.md",
+                        "reason": "website_impl_fastpath",
+                        "status": "ok",
+                        "output_excerpt": self._shorten(tool_output, max_chars=800),
+                    }
+                    if parsed_artifacts:
+                        tool_meta["artifacts"] = parsed_artifacts
+                        tool_meta["artifact"] = parsed_artifacts[0]
+                        first_source = str(parsed_artifacts[0].get("relative_path") or parsed_artifacts[0].get("name") or "").strip()
+                        if first_source:
+                            tool_meta["source"] = first_source
+                    generated_names = [
+                        str(item.get("relative_path") or item.get("name") or "").strip()
+                        for item in parsed_artifacts
+                        if isinstance(item, dict)
+                    ]
+                    generated_names = [name for name in generated_names if name]
+                    result_text = (
+                        f"Generated files: {', '.join(generated_names[:4])}"
+                        if generated_names
+                        else "Generated files: index.html, style.css, app.js, README.md"
+                    )
+                    selected_model = generation_model or requested_model or self.config.agent_executor_model_name
+                    logger.info(
+                        "Agent stage completed: session_id=%s stage=%s model=%s tool=%s",
+                        run_session_id,
+                        stage,
+                        selected_model,
+                        "file_write",
+                    )
+                    return result_text, selected_model, tool_meta
+
+                if capability == "website_builder" and website_validate_step:
+                    artifacts = self.list_artifacts(run_session_id)
+                    artifact_paths = {
+                        str(item.get("relative_path") or item.get("name") or "").strip().replace("\\", "/").lower()
+                        for item in artifacts
+                        if isinstance(item, dict)
+                    }
+                    has_index = "index.html" in artifact_paths or any(path.endswith("/index.html") for path in artifact_paths)
+                    has_style = "style.css" in artifact_paths or any(path.endswith("/style.css") for path in artifact_paths)
+                    has_app = "app.js" in artifact_paths or any(path.endswith("/app.js") for path in artifact_paths)
+                    missing: list[str] = []
+                    if not has_index:
+                        missing.append("index.html")
+                    if not has_style:
+                        missing.append("style.css")
+                    if not has_app:
+                        missing.append("app.js")
+                    if missing:
+                        result_text = f"Validation result: missing required files: {', '.join(missing)}."
+                    else:
+                        result_text = "Validation passed: local preview artifacts are complete (index.html, style.css, app.js)."
+                    logger.info(
+                        "Agent stage completed: session_id=%s stage=%s model=%s tool=%s",
+                        run_session_id,
+                        stage,
+                        "rule_based_executor",
+                        None,
+                    )
+                    return result_text, "rule_based_executor", None
+
+                if capability == "website_builder" and website_delivery_step:
+                    artifacts = self.list_artifacts(run_session_id)
+                    ordered_paths: list[str] = []
+                    for item in artifacts:
+                        if not isinstance(item, dict):
+                            continue
+                        relative_path = str(item.get("relative_path") or item.get("name") or "").strip()
+                        if not relative_path or relative_path in ordered_paths:
+                            continue
+                        ordered_paths.append(relative_path)
+                    key_files = [name for name in ("index.html", "style.css", "app.js", "README.md") if any(path.lower().endswith(name) for path in ordered_paths)]
+                    if not key_files:
+                        key_files = ordered_paths[:4]
+                    file_text = ", ".join(key_files) if key_files else "no artifacts found"
+                    result_text = (
+                        "Delivery notes prepared. "
+                        f"Key files: {file_text}. "
+                        "Open index.html for preview and use artifact download for full package."
+                    )
+                    logger.info(
+                        "Agent stage completed: session_id=%s stage=%s model=%s tool=%s",
+                        run_session_id,
+                        stage,
+                        "rule_based_executor",
+                        None,
+                    )
+                    return result_text, "rule_based_executor", None
+
                 text, selected_model, tool_meta = self._run_executor_stage_with_tools(
                     session_id=run_session_id,
                     provider_name=provider_name,
@@ -1502,7 +2312,7 @@ Open `index.html` directly in your browser.
                     allow_file_access=allow_file_access,
                     allow_web_read=allow_web_read,
                     allow_web_search=allow_web_search,
-                    allow_file_write=allow_file_write,
+                    allow_file_write=step_allow_file_write,
                 )
                 logger.info(
                     "Agent stage completed: session_id=%s stage=%s model=%s tool=%s",
@@ -1512,6 +2322,84 @@ Open `index.html` directly in your browser.
                     tool_meta.get("tool") if isinstance(tool_meta, dict) else None,
                 )
                 return text, selected_model, tool_meta
+
+            if stage == "reviewer" and capability in {"website_builder", "slide_builder"}:
+                prompt_text = str(prompt or "")
+                objective_match = re.search(r"Step objective:\s*(.+?)\nStep result:", prompt_text, flags=re.DOTALL | re.IGNORECASE)
+                result_match = re.search(r"Step result:\s*(.*)$", prompt_text, flags=re.DOTALL | re.IGNORECASE)
+                step_objective = str(objective_match.group(1) if objective_match else "").strip()
+                step_result = str(result_match.group(1) if result_match else "").strip()
+                objective_lower = step_objective.lower()
+                result_lower = step_result.lower()
+
+                if not step_result:
+                    return "FAIL: step result is empty.", "rule_based_reviewer"
+
+                if capability == "website_builder":
+                    artifacts = self.list_artifacts(run_session_id)
+                    artifact_paths = {
+                        str(item.get("relative_path") or item.get("name") or "").strip().replace("\\", "/").lower()
+                        for item in artifacts
+                        if isinstance(item, dict)
+                    }
+                    has_index = "index.html" in artifact_paths or any(path.endswith("/index.html") for path in artifact_paths)
+                    has_style = "style.css" in artifact_paths or any(path.endswith("/style.css") for path in artifact_paths)
+                    has_app = "app.js" in artifact_paths or any(path.endswith("/app.js") for path in artifact_paths)
+
+                    if (
+                        "implement complete html/css/js" in objective_lower
+                        or ("html" in objective_lower and "css" in objective_lower and "js" in objective_lower)
+                    ):
+                        if has_index and has_style and has_app:
+                            return "PASS", "rule_based_reviewer"
+                        has_html = ".html" in result_lower or "index.html" in result_lower
+                        has_css = ".css" in result_lower or "style.css" in result_lower
+                        has_js = ".js" in result_lower or "app.js" in result_lower
+                        if has_html and has_css and has_js:
+                            return "PASS", "rule_based_reviewer"
+                        return "FAIL: missing html/css/js evidence in step result.", "rule_based_reviewer"
+
+                    if "validate local preview" in objective_lower or "artifact completeness" in objective_lower:
+                        if has_index and has_style and has_app:
+                            return "PASS", "rule_based_reviewer"
+                        has_validation_evidence = (
+                            "index.html" in result_lower
+                            or "style.css" in result_lower
+                            or "app.js" in result_lower
+                            or "generated files" in result_lower
+                            or "preview" in result_lower
+                        )
+                        if has_validation_evidence:
+                            return "PASS", "rule_based_reviewer"
+                        return "FAIL: validation evidence is missing.", "rule_based_reviewer"
+
+                    # Planning and delivery steps: non-empty practical output is enough.
+                    return "PASS", "rule_based_reviewer"
+
+                # slide_builder
+                if "produce previewable html slides" in objective_lower or "downloadable files" in objective_lower:
+                    artifacts = self.list_artifacts(run_session_id)
+                    artifact_paths = {
+                        str(item.get("relative_path") or item.get("name") or "").strip().replace("\\", "/").lower()
+                        for item in artifacts
+                        if isinstance(item, dict)
+                    }
+                    has_slides = (
+                        "slides.html" in artifact_paths
+                        or any(path.endswith("/slides.html") for path in artifact_paths)
+                        or "slides.html" in result_lower
+                        or ".html" in result_lower
+                    )
+                    has_notes = (
+                        "speaker_notes.md" in artifact_paths
+                        or any(path.endswith("/speaker_notes.md") for path in artifact_paths)
+                        or "speaker_notes.md" in result_lower
+                        or "notes" in result_lower
+                    )
+                    if has_slides and has_notes:
+                        return "PASS", "rule_based_reviewer"
+                    return "FAIL: missing slide artifact evidence.", "rule_based_reviewer"
+                return "PASS", "rule_based_reviewer"
 
             messages = [
                 {"role": "system", "content": self._system_prompt("general")},
@@ -1542,11 +2430,13 @@ Open `index.html` directly in your browser.
             "current_step_index": 0,
             "review_feedback": "",
             "review_retries": 0,
-            "max_review_retries": max(0, self.config.agent_max_review_retries),
+            "max_review_retries": (0 if capability in {"website_builder", "slide_builder"} else max(0, self.config.agent_max_review_retries)),
             "review_decision": "next_step",
             "response": "",
             "selected_models": {},
             "last_tool_meta": None,
+            "capability": capability or "",
+            "preserve_task_wording": bool(capability in {"website_builder", "slide_builder"}),
         }
 
         final_text = ""
@@ -1592,13 +2482,27 @@ Open `index.html` directly in your browser.
                 return f"Tool {tool_name} failed"
 
             if tool_name == "file_write":
+                artifacts_meta = tool_meta.get("artifacts") if isinstance(tool_meta.get("artifacts"), list) else []
+                file_paths: list[str] = []
+                for item in artifacts_meta:
+                    if not isinstance(item, dict):
+                        continue
+                    relative_path = str(item.get("relative_path") or item.get("name") or "").strip()
+                    if relative_path and relative_path not in file_paths:
+                        file_paths.append(relative_path)
+                if file_paths:
+                    if len(file_paths) == 1:
+                        return f"Generated file: {file_paths[0]}"
+                    return f"Generated files: {', '.join(file_paths[:4])}"
                 artifact_meta = tool_meta.get("artifact")
                 if isinstance(artifact_meta, dict):
-                    relative_path = str(
-                        artifact_meta.get("relative_path") or artifact_meta.get("name") or ""
-                    ).strip()
+                    relative_path = str(artifact_meta.get("relative_path") or artifact_meta.get("name") or "").strip()
                     if relative_path:
                         return f"Generated file: {relative_path}"
+                auto_files = tool_meta.get("auto_generated_files") if isinstance(tool_meta.get("auto_generated_files"), list) else []
+                cleaned_auto = [str(item).strip() for item in auto_files if str(item).strip()]
+                if cleaned_auto:
+                    return f"Auto-generated files: {', '.join(cleaned_auto[:4])}"
                 source = str(tool_meta.get("source") or "").strip()
                 if source:
                     return f"Generated file: {source}"
@@ -1794,17 +2698,41 @@ Open `index.html` directly in your browser.
                                 },
                             },
                         }
-                        artifact_meta = tool_meta.get("artifact")
-                        if isinstance(artifact_meta, dict):
-                            artifact_item = {
-                                "name": str(artifact_meta.get("name") or "").strip(),
-                                "relative_path": str(artifact_meta.get("relative_path") or "").strip(),
-                                "size_bytes": int(artifact_meta.get("size_bytes") or 0),
-                                "previewable": bool(artifact_meta.get("previewable", False)),
-                            }
-                            if artifact_item["name"]:
-                                generated_artifact_names.add(artifact_item["name"])
-                                yield self._make_artifact_token_event(session_id=session_id, item=artifact_item)
+                        artifact_items: list[dict[str, Any]] = []
+                        artifacts_meta = tool_meta.get("artifacts")
+                        if isinstance(artifacts_meta, list):
+                            for raw_item in artifacts_meta:
+                                if not isinstance(raw_item, dict):
+                                    continue
+                                artifact_items.append(
+                                    {
+                                        "name": str(raw_item.get("name") or "").strip(),
+                                        "relative_path": str(raw_item.get("relative_path") or "").strip(),
+                                        "size_bytes": int(raw_item.get("size_bytes") or 0),
+                                        "previewable": bool(raw_item.get("previewable", False)),
+                                    }
+                                )
+                        if not artifact_items:
+                            artifact_meta = tool_meta.get("artifact")
+                            if isinstance(artifact_meta, dict):
+                                artifact_items.append(
+                                    {
+                                        "name": str(artifact_meta.get("name") or "").strip(),
+                                        "relative_path": str(artifact_meta.get("relative_path") or "").strip(),
+                                        "size_bytes": int(artifact_meta.get("size_bytes") or 0),
+                                        "previewable": bool(artifact_meta.get("previewable", False)),
+                                    }
+                                )
+                        seen_artifacts: set[str] = set()
+                        for artifact_item in artifact_items:
+                            name = str(artifact_item.get("name") or "").strip()
+                            relative_path = str(artifact_item.get("relative_path") or "").strip()
+                            key = (relative_path or name).lower()
+                            if not name or not key or key in seen_artifacts:
+                                continue
+                            seen_artifacts.add(key)
+                            generated_artifact_names.add(name)
+                            yield self._make_artifact_token_event(session_id=session_id, item=artifact_item)
                 elif node_name == "reviewer":
                     feedback = node_output.get("review_feedback", "")
                     retries = node_output.get("review_retries", 0)
@@ -1860,6 +2788,17 @@ Open `index.html` directly in your browser.
                     )
                 elif node_name == "summarizer":
                     final_text = sanitize_delivery_text(node_output.get("response", "") or final_text)
+                    summary_model = (node_output.get("selected_models", {}) or {}).get("summarizer")
+                    summary_status = self._make_status_token_event(
+                        delta="[summarizer] Final summary completed.\n",
+                        session_id=session_id,
+                        stage="summarizer",
+                        model=summary_model,
+                        task_items=self._task_items_from_tasks(node_output.get("task_list", [])),
+                        capability=capability,
+                    )
+                    self._record_task_event(session_id, summary_status["payload"])
+                    yield summary_status
                     if final_text:
                         yield {
                             "event": "token",
@@ -1870,7 +2809,7 @@ Open `index.html` directly in your browser.
                             delta="Summarizer: Final summary completed.\n",
                             session_id=session_id,
                             stage="summarizer",
-                            model=(node_output.get("selected_models", {}) or {}).get("summarizer"),
+                            model=summary_model,
                             task_items=self._task_items_from_tasks(node_output.get("task_list", [])),
                             capability=capability,
                         )
@@ -2066,6 +3005,7 @@ Open `index.html` directly in your browser.
             self._append_session_message(session_id=session_id, role="user", content=user_message)
 
             final_text = ""
+            capability = ""
             try:
                 requested_capability = str(opts.get("general_capability", "")).strip().lower()
                 capability = requested_capability if requested_capability in {"website_builder", "slide_builder"} else ""
@@ -2113,7 +3053,7 @@ Open `index.html` directly in your browser.
                 yield self._make_progress_token_event(
                     delta=(
                         f"Router: {'Step by step execution of the task' if should_plan else 'Direct answer'}"
-                        + (f"（Ability: {capability}）" if capability else "")
+                        + (f" (Capability: {capability})" if capability else "")
                         + "\n"
                     ),
                     session_id=session_id,
@@ -2208,6 +3148,29 @@ Open `index.html` directly in your browser.
                 )
                 self._record_task_event(session_id, budget_event["payload"])
                 yield budget_event
+                if capability in {"website_builder", "slide_builder"}:
+                    self._materialize_capability_fallback_artifacts(
+                        capability=capability,
+                        session_id=session_id,
+                        user_message=user_message,
+                    )
+                    assistant_text = (
+                        "Budget limit reached during generation. "
+                        "Fallback artifacts have been prepared for preview and download."
+                    )
+                    artifacts = self.list_artifacts(session_id)
+                    self._append_session_message(session_id=session_id, role="assistant", content=assistant_text)
+                    yield {
+                        "event": "final",
+                        "content_type": "text",
+                        "payload": {
+                            "text": assistant_text,
+                            "usage": self._get_usage_snapshot(session_id),
+                            "artifacts": artifacts,
+                            "capability": capability,
+                        },
+                    }
+                    return
                 yield {
                     "event": "error",
                     "content_type": "text",

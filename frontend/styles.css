@@ -1,0 +1,2 @@
+/* Compatibility alias for legacy references to /styles.css */
+@import "./style.css";

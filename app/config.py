@@ -342,7 +342,7 @@ def load_config(project_root: Path) -> AppConfig:
             config_data,
             "session_token_budget",
             "SESSION_TOKEN_BUDGET",
-            320000,
+            1200000,
         ),
         session_cost_budget_usd=_pick_float(
             config_data,
