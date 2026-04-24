@@ -587,6 +587,36 @@ class ChatServiceTests(unittest.TestCase):
         self.assertEqual(provider_name, "huggingface")
         self.assertEqual(model_name, "Qwen/Qwen3.5-9B:together")
 
+    def test_general_raw_model_id_prefers_openai_compatible_when_openai_key_exists(self):
+        service = ChatService(
+            make_config(
+                general_openai_provider="huggingface",
+                openai_api_key="openai-key",
+            )
+        )
+        provider_name, model_name = service._resolve_general_backend(
+            provider=None,
+            model=None,
+            provider_options={"general_model": "zai-org/GLM-5.1:together"},
+        )
+        self.assertEqual(provider_name, "openai_compatible")
+        self.assertEqual(model_name, "zai-org/GLM-5.1:together")
+
+    def test_general_raw_model_id_falls_back_to_configured_provider_without_openai_key(self):
+        service = ChatService(
+            make_config(
+                general_openai_provider="huggingface",
+                openai_api_key=None,
+            )
+        )
+        provider_name, model_name = service._resolve_general_backend(
+            provider=None,
+            model=None,
+            provider_options={"general_model": "zai-org/GLM-5.1:together"},
+        )
+        self.assertEqual(provider_name, "huggingface")
+        self.assertEqual(model_name, "zai-org/GLM-5.1:together")
+
     def test_general_model_alias_routes_deepseek_provider_when_deepseek_key_exists(self):
         service = ChatService(
             make_config(

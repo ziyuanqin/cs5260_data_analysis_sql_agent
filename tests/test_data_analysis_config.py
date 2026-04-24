@@ -34,6 +34,7 @@ class DataAnalysisConfigTests(unittest.TestCase):
                 "APP_CONFIG_PATH": config_path,
                 "OPENAI_API_KEY": "env-openai",
                 "DEEPSEEK_API_KEY": "env-deepseek",
+                "EDA_USE_APP_CONFIG": "1",
             }
             with patch.dict(os.environ, env, clear=False):
                 resolved = agent._resolve_llm_credentials()
@@ -56,6 +57,7 @@ class DataAnalysisConfigTests(unittest.TestCase):
                 "APP_CONFIG_PATH": config_path,
                 "OPENAI_API_KEY": "   ",
                 "DEEPSEEK_API_KEY": "",
+                "EDA_USE_APP_CONFIG": "1",
             }
             with patch.dict(os.environ, env, clear=False):
                 resolved = agent._resolve_llm_credentials()
@@ -64,6 +66,29 @@ class DataAnalysisConfigTests(unittest.TestCase):
         self.assertEqual(resolved["openai_key_source"], "app_config")
         self.assertEqual(resolved["deepseek_key"], "cfg-deepseek")
         self.assertEqual(resolved["deepseek_key_source"], "app_config")
+
+    def test_blank_env_without_opt_in_does_not_fallback_to_app_config(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = self._write_config(
+                tmp_dir,
+                {
+                    "openai_api_key": "cfg-openai",
+                    "deepseek_api_key": "cfg-deepseek",
+                },
+            )
+            env = {
+                "APP_CONFIG_PATH": config_path,
+                "OPENAI_API_KEY": "   ",
+                "DEEPSEEK_API_KEY": "",
+                "EDA_USE_APP_CONFIG": "0",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                resolved = agent._resolve_llm_credentials()
+
+        self.assertIsNone(resolved["openai_key"])
+        self.assertEqual(resolved["openai_key_source"], "none")
+        self.assertIsNone(resolved["deepseek_key"])
+        self.assertEqual(resolved["deepseek_key_source"], "none")
 
 
 if __name__ == "__main__":

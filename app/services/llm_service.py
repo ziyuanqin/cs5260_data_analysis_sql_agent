@@ -231,6 +231,8 @@ class ChatService:
         raw_alias = str((provider_options or {}).get("general_model", "")).strip()
         alias = raw_alias.lower()
         if alias == "openai":
+            if self.config.openai_api_key:
+                return "openai_compatible", self.config.general_openai_model_name
             return self.config.general_openai_provider, self.config.general_openai_model_name
         if alias == "deepseek":
             if self.config.deepseek_api_key:
@@ -238,9 +240,12 @@ class ChatService:
             return self.config.general_deepseek_provider, self.config.general_deepseek_model_name
         if alias in {"huggingface", "qwen", "hf"}:
             return "huggingface", self.config.huggingface_model_name
-        # Allow passing raw model IDs via general_model (routed to Hugging Face router).
+        # Frontend sends raw model IDs (e.g. zai-org/GLM-5.1:together). Route these to
+        # OpenAI-compatible backend by default so OpenRouter/compatible keys can be used.
         if raw_alias:
-            return "huggingface", raw_alias
+            if self.config.openai_api_key:
+                return "openai_compatible", raw_alias
+            return self.config.general_openai_provider, raw_alias
 
         return self._resolve_provider_name(None), None
 

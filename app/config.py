@@ -256,7 +256,7 @@ def load_config(project_root: Path) -> AppConfig:
             config_data,
             "openai_api_base_url",
             "OPENAI_COMPAT_BASE_URL",
-            os.getenv("YUNWU_BASE_URL", "https://yunwu.ai/v1"),
+            os.getenv("YUNWU_BASE_URL", "https://api.openai.com/v1"),
         ),
         openai_api_key=openai_api_key,
         openai_model_name=openai_model_name,

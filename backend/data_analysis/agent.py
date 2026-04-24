@@ -69,9 +69,15 @@ def _pick_credential(env_name: str, config_data: dict, config_key: str) -> tuple
 
 
 def _resolve_llm_credentials() -> dict[str, str | None]:
-    """Resolve credentials with precedence: non-empty env first, then app_config."""
+    """Resolve credentials for EDA/SQL expert path.
 
-    config_data = _load_app_config()
+    Default behavior prefers environment variables only, so adding app_config.json
+    for general mode does not unexpectedly alter expert-mode model routing.
+    Set EDA_USE_APP_CONFIG=1 to re-enable app_config fallback for this module.
+    """
+
+    use_app_config = os.getenv("EDA_USE_APP_CONFIG", "").strip().lower() in {"1", "true", "yes", "on"}
+    config_data = _load_app_config() if use_app_config else {}
     openai_key, openai_source = _pick_credential("OPENAI_API_KEY", config_data, "openai_api_key")
     deepseek_key, deepseek_source = _pick_credential("DEEPSEEK_API_KEY", config_data, "deepseek_api_key")
 
